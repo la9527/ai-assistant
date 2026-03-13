@@ -145,6 +145,14 @@ flowchart TB
 - `GET /api/tasks/{task_id}`
 - `GET /api/health`
 
+현재 FastAPI의 Slack 경로는 아래 범위를 포함한다.
+
+- `url_verification` challenge 응답
+- Slack signing secret 기반 서명 검증
+- DM 또는 `app_mention` 메시지 처리
+- 승인 명령 `승인 <ticket_id>`, `거절 <ticket_id>` 처리
+- Bot token이 있으면 `chat.postMessage` 기준 응답 전송
+
 ## 3. LangGraph 라우터
 
 역할:
@@ -209,8 +217,10 @@ LangGraph에 과도한 영역:
 
 - `workflows/n8n/assistant-automation.json`
 - webhook 경로는 `/webhook/assistant-automation`
-- 현재는 `assistant-automation`, `assistant-calendar-create`, `assistant-calendar-update`, `assistant-calendar-delete`, `assistant-gmail-summary`, `assistant-gmail-draft`, `assistant-gmail-send` workflow로 분리되어 있다.
-- 캘린더 쓰기와 메일 초안·발송은 모두 승인 티켓 이후에만 실행한다.
+- 현재는 `assistant-automation`, `assistant-calendar-create`, `assistant-calendar-update`, `assistant-calendar-delete`, `assistant-gmail-summary`, `assistant-gmail-draft`, `assistant-gmail-send`, `assistant-gmail-reply` workflow로 분리되어 있다.
+- 캘린더 쓰기와 메일 초안, 발송, 회신은 모두 승인 티켓 이후에만 실행한다.
+- Gmail 자동화는 최근 메일 요약, 초안 작성, 실제 발송, 제목 또는 발신자 기반 회신 대상 선택, `thread` 이어쓰기까지 검증되어 있다.
+- `첨부 https://...` 형식의 공용 URL 1건은 초안, 발송, 회신 workflow에서 실제 첨부파일로 내려받아 포함할 수 있다.
 
 ## 5. 로컬 LLM 런타임과 모델 계층
 
@@ -275,17 +285,19 @@ LangGraph에 과도한 영역:
 
 초기 권장:
 
-- Slack Bolt for Python
-- Socket Mode
+- Slack Events API
+- Bot token 기반 응답 전송
 
 이유:
 
-- 공개 이벤트 URL 없이 시작 가능
-- 초기 개발 난이도가 낮음
+- 현재 FastAPI 단일 진입점 구조와 잘 맞는다.
+- Kakao와 같은 webhook 계층으로 맞출 수 있다.
+- 승인 티켓과 세션 저장 구조를 공통으로 재사용하기 쉽다.
 
 주의:
 
-- 나중에 Events API로 전환할 수 있도록 내부 인터페이스를 분리한다.
+- 실제 검증을 위해 공개 HTTPS URL과 Slack signing secret 설정이 필요하다.
+- 향후 Socket Mode나 Slack Bolt worker를 추가하더라도 내부 공통 메시지 포맷은 유지한다.
 
 ### KakaoTalk
 

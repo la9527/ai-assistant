@@ -1,11 +1,19 @@
+import hashlib
+import hmac
+import json
 import re
+import time
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from fastapi import Depends
 from fastapi import FastAPI
+from fastapi import Header
 from fastapi import HTTPException
+from fastapi import Request
+
+import httpx
 
 from app.automation import process_message
 from app.config import settings
@@ -221,8 +229,73 @@ def chat(payload: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
 
 
 @app.post("/api/slack/events")
-def slack_events() -> dict[str, str]:
-    return {"status": "accepted"}
+async def slack_events(
+    request: Request,
+    db: Session = Depends(get_db),
+    x_slack_request_timestamp: str | None = Header(default=None, alias="X-Slack-Request-Timestamp"),
+    x_slack_signature: str | None = Header(default=None, alias="X-Slack-Signature"),
+) -> dict[str, str]:
+    raw_body = await request.body()
+    if settings.slack_signing_secret and not _is_valid_slack_signature(
+        raw_body,
+        x_slack_request_timestamp,
+        x_slack_signature,
+    ):
+        raise HTTPException(status_code=401, detail="invalid slack signature")
+
+    payload = json.loads(raw_body.decode("utf-8") or "{}")
+    if payload.get("type") == "url_verification":
+        challenge = payload.get("challenge")
+        if not isinstance(challenge, str):
+            raise HTTPException(status_code=400, detail="missing slack challenge")
+        return {"challenge": challenge}
+
+    if payload.get("type") != "event_callback":
+        return {"status": "ignored"}
+
+    event = payload.get("event") or {}
+    if not _should_process_slack_event(event):
+        return {"status": "ignored"}
+
+    text = _normalize_slack_message_text(str(event.get("text") or ""))
+    user_id = str(event.get("user") or "") or None
+    channel_id = str(event.get("channel") or "") or None
+
+    approval_command = _match_approval_command(text)
+    approval_ticket_id: str | None = None
+    if approval_command is not None:
+        session_id, reply, route, approval_ticket_id = _handle_approval_command(approval_command, user_id, db)
+    else:
+        session = create_session(db, channel="slack", user_id=user_id, message=text)
+        result = process_message(text, "slack", session.id, user_id)
+        session_id = session.id
+        route = str(result["route"])
+        if result["route"] == "approval_required" and result["action_type"]:
+            ticket = create_approval_ticket(db, session_id=session.id, action_type=str(result["action_type"]))
+            create_task_run(
+                db,
+                session_id=session.id,
+                task_type=str(result["action_type"]),
+                detail=text,
+                status="pending_approval",
+            )
+            approval_ticket_id = ticket.id
+            reply = f"{result['reply']} ticket={ticket.id}"
+        else:
+            create_task_run(db, session_id=session.id, task_type=route, detail=text)
+            reply = str(result["reply"])
+
+    delivery = "not_configured"
+    if channel_id and settings.slack_bot_token:
+        delivery = _post_slack_message(channel_id, reply)
+
+    return {
+        "status": "accepted",
+        "route": route,
+        "session_id": session_id,
+        "delivery": delivery,
+        **({"approval_ticket_id": approval_ticket_id} if approval_ticket_id else {}),
+    }
 
 
 @app.post("/api/kakao/webhook", response_model=KakaoWebhookResponse)
@@ -399,3 +472,62 @@ def _execute_pending_ticket(ticket: ApprovalTicket, db: Session) -> tuple[str | 
     )
     update_task_run_status(db, pending_task, status="completed", detail=pending_task.detail)
     return str(result["reply"]), str(result["route"])
+
+
+def _is_valid_slack_signature(
+    raw_body: bytes,
+    request_timestamp: str | None,
+    request_signature: str | None,
+) -> bool:
+    if not request_timestamp or not request_signature:
+        return False
+    try:
+        timestamp = int(request_timestamp)
+    except ValueError:
+        return False
+    if abs(int(time.time()) - timestamp) > 60 * 5:
+        return False
+    basestring = f"v0:{request_timestamp}:{raw_body.decode('utf-8')}"
+    expected = "v0=" + hmac.new(
+        settings.slack_signing_secret.encode("utf-8"),
+        basestring.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(expected, request_signature)
+
+
+def _should_process_slack_event(event: dict[str, object]) -> bool:
+    event_type = str(event.get("type") or "")
+    subtype = str(event.get("subtype") or "")
+    if event_type not in {"message", "app_mention"}:
+        return False
+    if subtype:
+        return False
+    if event.get("bot_id") or not event.get("user"):
+        return False
+    if not event.get("channel") or not event.get("text"):
+        return False
+    channel_type = str(event.get("channel_type") or "")
+    return event_type == "app_mention" or channel_type == "im"
+
+
+def _normalize_slack_message_text(message: str) -> str:
+    return re.sub(r"<@[A-Z0-9]+>", "", message).strip()
+
+
+def _post_slack_message(channel_id: str, text: str) -> str:
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.post(
+                "https://slack.com/api/chat.postMessage",
+                headers={
+                    "Authorization": f"Bearer {settings.slack_bot_token}",
+                    "Content-Type": "application/json; charset=utf-8",
+                },
+                json={"channel": channel_id, "text": text},
+            )
+            response.raise_for_status()
+        payload = response.json()
+        return "sent" if payload.get("ok") else f"slack_api_error:{payload.get('error', 'unknown')}"
+    except Exception:
+        return "delivery_failed"

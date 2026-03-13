@@ -25,7 +25,7 @@
 - 코어 API: FastAPI
 - 에이전트 오케스트레이션: LangGraph
 - 자동화: n8n
-- 메시징: Slack Socket Mode, Kakao 채널 webhook/OpenBuilder
+- 메시징: Slack Events API, Kakao 채널 webhook/OpenBuilder
 - 데이터: PostgreSQL, Redis
 - 로컬 자동화: AppleScript, Playwright, Open Interpreter
 
@@ -59,7 +59,7 @@
 
 - FastAPI 기반 공통 API
 - LangGraph 최소 라우터
-- Slack Socket Mode 연동
+- Slack Events API 연동
 
 ### 3단계
 
@@ -121,6 +121,7 @@ Kakao 채널을 추가한다.
 - [docs/architecture.md](docs/architecture.md)
 - [docs/google-calendar-integration.md](docs/google-calendar-integration.md)
 - [docs/gmail-integration.md](docs/gmail-integration.md)
+- [docs/slack-integration.md](docs/slack-integration.md)
 
 ## 현재 검증된 자동화 범위
 
@@ -129,6 +130,22 @@ Kakao 채널을 추가한다.
 - Gmail 최근 메일 요약
 - Gmail 메일 초안 작성과 실제 발송 승인 실행
 - Gmail 회신과 thread 이어쓰기 승인 실행
+- Gmail 첨부 URL 1건 포함 초안 작성, 실제 발송, 회신 실행
+- Kakao 자동화 카드와 quick reply 기준의 메일 첨부 예시 UX 검증
+- Slack Events API 기준 `url_verification`, app mention, DM, 승인 필요 응답 경로 로컬 payload 검증
+
+## 현재 보류 사항
+
+- Slack 실제 워크스페이스 검증은 공개 도메인과 HTTPS 경로가 준비된 뒤 진행한다.
+
+## 현재 남은 우선순위
+
+1. 공개 도메인 준비 후 Slack 실제 워크스페이스 연동과 토큰 기반 이벤트 검증
+2. Playwright 기반 브라우저 자동화 1개 read-only 시나리오 구현
+3. AppleScript 기반 macOS 자동화 1개 승인 시나리오 구현
+4. LangGraph 상태 라우팅과 승인 후 재개 구조 도입
+5. 채널 통합 사용자 매핑과 장기 메모리 계층 추가
+6. 백업, 복구, 재기동 절차의 실제 검증과 문서화
 
 ## OpenClaw 반영 확장 방향
 
