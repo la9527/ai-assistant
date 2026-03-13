@@ -20,6 +20,9 @@ GMAIL_AUTOMATION_KEYWORDS = (
     "gmail",
     "email",
     "편지함",
+    "수신",
+    "참조",
+    "bcc",
 )
 
 CALENDAR_CREATE_KEYWORDS = ("추가", "생성", "등록", "만들", "잡아")
@@ -29,11 +32,15 @@ CALENDAR_DELETE_KEYWORDS = ("삭제", "취소", "지워", "제거", "없애")
 GMAIL_DRAFT_KEYWORDS = ("초안", "draft")
 GMAIL_SEND_KEYWORDS = ("발송", "send")
 GMAIL_SUMMARY_KEYWORDS = ("요약", "최근", "편지함", "받은편지함", "inbox")
+GMAIL_REPLY_KEYWORDS = ("답장", "회신", "reply")
+GMAIL_THREAD_KEYWORDS = ("이어", "이어서", "계속", "thread", "스레드")
 
 EMAIL_ADDRESS_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 TIME_FRAGMENT_PATTERN = re.compile(
     r"(?:오전|오후)?\s*\d{1,2}(?:(?::\s*\d{2})|\s*시(?:\s*\d{1,2}\s*분?)?)\s*(?:반)?"
 )
+THREAD_ID_PATTERN = re.compile(r"(?:thread|스레드)\s*(?:id)?\s*[:=]?\s*([A-Za-z0-9_-]+)", re.IGNORECASE)
+MESSAGE_ID_PATTERN = re.compile(r"(?:message|메시지|메일)\s*(?:id)?\s*[:=]?\s*([A-Za-z0-9_-]{10,})", re.IGNORECASE)
 
 ACTION_LABELS = {
     "calendar_create": "생성",
@@ -41,6 +48,8 @@ ACTION_LABELS = {
     "calendar_delete": "삭제",
     "gmail_draft": "초안 작성",
     "gmail_send": "발송",
+    "gmail_reply": "회신",
+    "gmail_thread_reply": "thread 이어쓰기",
 }
 
 GMAIL_COMPOSE_STOP_LABELS = (
@@ -49,6 +58,17 @@ GMAIL_COMPOSE_STOP_LABELS = (
     "bcc",
     "숨은참조",
     "숨은 참조",
+    "받는사람",
+    "받는 사람",
+    "수신자",
+    "수신",
+    "발신자",
+    "보낸 사람",
+    "sender",
+    "thread",
+    "스레드",
+    "message",
+    "메시지",
     "메일 보내줘",
     "메일 보내 줘",
     "이메일 보내줘",
@@ -86,6 +106,12 @@ def classify_message_intent(message: str) -> str:
 
     if has_gmail_keyword and any(keyword in lowered for keyword in GMAIL_DRAFT_KEYWORDS):
         return "gmail_draft"
+    if has_gmail_keyword and any(keyword in lowered for keyword in GMAIL_THREAD_KEYWORDS) and any(
+        keyword in lowered for keyword in GMAIL_REPLY_KEYWORDS
+    ):
+        return "gmail_thread_reply"
+    if has_gmail_keyword and any(keyword in lowered for keyword in GMAIL_REPLY_KEYWORDS):
+        return "gmail_reply"
     if has_gmail_keyword and (
         any(keyword in lowered for keyword in GMAIL_SEND_KEYWORDS) or "보내" in message
     ) and not any(keyword in lowered for keyword in GMAIL_SUMMARY_KEYWORDS):
@@ -174,6 +200,37 @@ def process_message(
             return {"reply": reply, "route": "n8n", "action_type": intent}
         fallback_reply = "승인된 메일 작업 실행에 실패했습니다. n8n Gmail workflow 또는 credential 연결 상태를 확인하세요."
         return {"reply": fallback_reply, "route": "n8n_fallback", "action_type": intent}
+
+    if intent in {"gmail_reply", "gmail_thread_reply"}:
+        parsed = parse_gmail_reply_request(message, intent)
+        if parsed is None:
+            return {
+                "reply": "메일 회신 요청을 이해하지 못했습니다. 예: 제목 AI Assistant Gmail 발송 테스트 내용 확인했습니다 메일에 답장해줘",
+                "route": "validation_error",
+                "action_type": intent,
+            }
+        if not approval_granted:
+            action_label = ACTION_LABELS[intent]
+            return {
+                "reply": f"메일 {action_label} 요청입니다. 승인 후 실행합니다.",
+                "route": "approval_required",
+                "action_type": intent,
+            }
+        reply = run_n8n_automation(
+            message,
+            channel,
+            session_id,
+            user_id,
+            settings.n8n_gmail_reply_webhook_path,
+            parsed,
+        )
+        if reply is not None:
+            return {"reply": reply, "route": "n8n", "action_type": intent}
+        return {
+            "reply": "승인된 메일 회신 실행에 실패했습니다. n8n Gmail reply workflow 또는 credential 연결 상태를 확인하세요.",
+            "route": "n8n_fallback",
+            "action_type": intent,
+        }
 
     if intent == "gmail_summary" and settings.n8n_gmail_webhook_path:
         reply = run_n8n_automation(message, channel, session_id, user_id, settings.n8n_gmail_webhook_path)
@@ -271,8 +328,8 @@ def parse_calendar_request(message: str, intent: str) -> dict[str, str] | None:
 
 
 def parse_gmail_compose_request(message: str, intent: str) -> dict[str, str] | None:
-    send_to = _extract_recipient_list(message, ("받는사람", "수신자", "to"))
-    cc_list = _extract_recipient_list(message, ("참조", "cc"))
+    send_to = _extract_recipient_list(message, ("받는사람", "받는 사람", "수신자", "수신", "to"))
+    cc_list = _extract_recipient_list(message, ("참조", "참조자", "cc"))
     bcc_list = _extract_recipient_list(message, ("숨은참조", "숨은 참조", "bcc"))
 
     if send_to is None:
@@ -320,6 +377,58 @@ def parse_gmail_compose_request(message: str, intent: str) -> dict[str, str] | N
     if bcc_list:
         result["bcc_list"] = bcc_list
     result["action"] = intent
+    return result
+
+
+def parse_gmail_reply_request(message: str, intent: str) -> dict[str, str] | None:
+    subject = _extract_labeled_segment(
+        message,
+        labels=("제목", "subject"),
+        stop_labels=("내용", "본문", "발신자", "보낸 사람", "sender", *GMAIL_COMPOSE_STOP_LABELS),
+    )
+    body = _extract_labeled_segment(
+        message,
+        labels=("내용", "본문", "message"),
+        stop_labels=("발신자", "보낸 사람", "sender", *GMAIL_COMPOSE_STOP_LABELS),
+    )
+    sender = _extract_labeled_segment(
+        message,
+        labels=("발신자", "보낸 사람", "sender"),
+        stop_labels=("제목", "subject", "내용", "본문", *GMAIL_COMPOSE_STOP_LABELS),
+    )
+    cc_list = _extract_recipient_list(message, ("참조", "참조자", "cc"))
+    bcc_list = _extract_recipient_list(message, ("숨은참조", "숨은 참조", "bcc"))
+    thread_id = _extract_pattern_value(THREAD_ID_PATTERN, message)
+    message_id = _extract_pattern_value(MESSAGE_ID_PATTERN, message)
+
+    if not body:
+        return None
+
+    result = {
+        "reply_mode": "thread" if intent == "gmail_thread_reply" else "reply",
+        "message": body,
+        "email_type": "text",
+    }
+    if subject:
+        result["subject"] = subject
+    if sender:
+        result["sender"] = sender
+    if thread_id:
+        result["thread_id"] = thread_id
+    if message_id:
+        result["message_id"] = message_id
+    if cc_list:
+        result["cc_list"] = cc_list
+    if bcc_list:
+        result["bcc_list"] = bcc_list
+
+    search_query = _build_gmail_reply_search_query(subject, sender)
+    if search_query:
+        result["search_query"] = search_query
+
+    if not result.get("thread_id") and not result.get("message_id") and not result.get("search_query"):
+        return None
+
     return result
 
 
@@ -429,7 +538,7 @@ def _extract_labeled_segment(
 ) -> str | None:
     label_pattern = "|".join(sorted((re.escape(label) for label in labels), key=len, reverse=True))
     stop_pattern = "|".join(sorted((re.escape(label) for label in stop_labels), key=len, reverse=True))
-    pattern = rf"(?:{label_pattern})\s*(?:은|는|:)?\s*(.+?)(?=\s*(?:{stop_pattern})\b|$)"
+    pattern = rf"(?:{label_pattern})\s*(?:은|는|이|가|을|를|:)?\s*(.+?)(?=\s*(?:{stop_pattern})\b|$)"
     match = re.search(pattern, message, re.IGNORECASE)
     if not match:
         return None
@@ -449,6 +558,29 @@ def _extract_recipient_list(message: str, labels: tuple[str, ...]) -> str | None
     if not emails:
         return None
     return ", ".join(emails)
+
+
+def _extract_pattern_value(pattern: re.Pattern[str], message: str) -> str | None:
+    match = pattern.search(message)
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
+def _build_gmail_reply_search_query(subject: str | None, sender: str | None) -> str | None:
+    query_parts: list[str] = []
+    if subject:
+        query_parts.append(f'subject:"{subject}"')
+    if sender:
+        sender_email = EMAIL_ADDRESS_PATTERN.search(sender)
+        if sender_email:
+            query_parts.append(f'from:{sender_email.group(0)}')
+        else:
+            query_parts.append(f'from:"{sender}"')
+    query_parts.append("newer_than:30d")
+    if len(query_parts) == 1 and query_parts[0] == "newer_than:30d":
+        return None
+    return " ".join(query_parts)
 
 
 def _split_emails(value: str) -> list[str]:

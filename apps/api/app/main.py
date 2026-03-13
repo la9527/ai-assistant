@@ -48,6 +48,26 @@ app = FastAPI(title="AI Assistant API", version="0.1.0")
 APPROVE_PATTERN = re.compile(r"^(승인|approve)\s+([a-zA-Z0-9-]+)$", re.IGNORECASE)
 REJECT_PATTERN = re.compile(r"^(거절|reject)\s+([a-zA-Z0-9-]+)$", re.IGNORECASE)
 
+DEFAULT_KAKAO_QUICK_REPLIES = [
+    KakaoQuickReply(label="일정 요약", action="message", messageText="오늘 일정 요약해줘"),
+    KakaoQuickReply(label="메일 요약", action="message", messageText="최근 메일 요약해줘"),
+    KakaoQuickReply(
+        label="일정 삭제",
+        action="message",
+        messageText="내일 오후 3시 회의 일정 삭제해줘",
+    ),
+    KakaoQuickReply(
+        label="메일 초안",
+        action="message",
+        messageText="test@example.com로 제목 안부, 내용 안녕하세요 메일 초안 작성해줘",
+    ),
+    KakaoQuickReply(
+        label="메일 회신",
+        action="message",
+        messageText="제목 AI Assistant Gmail 발송 테스트 내용 확인했습니다 메일에 답장해줘",
+    ),
+]
+
 
 def build_kakao_response(
     reply: str,
@@ -78,6 +98,11 @@ def build_kakao_response(
                 )
             )
         ]
+        quick_replies = [
+            KakaoQuickReply(label="승인", action="message", messageText=f"승인 {approval_ticket_id}"),
+            KakaoQuickReply(label="거절", action="message", messageText=f"거절 {approval_ticket_id}"),
+            *DEFAULT_KAKAO_QUICK_REPLIES[:2],
+        ]
     elif route in {"n8n", "n8n_fallback"}:
         outputs = [
             KakaoBasicCardOutput(
@@ -87,16 +112,20 @@ def build_kakao_response(
                     buttons=[
                         KakaoButton(action="message", label="오늘 일정 다시 확인", messageText="오늘 일정 다시 요약해줘"),
                         KakaoButton(action="message", label="최근 메일 확인", messageText="최근 메일 요약해줘"),
+                        KakaoButton(action="message", label="메일 초안 작성", messageText="test@example.com로 제목 안부, 내용 안녕하세요 메일 초안 작성해줘"),
+                        KakaoButton(action="message", label="메일 회신", messageText="제목 AI Assistant Gmail 발송 테스트 내용 확인했습니다 메일에 답장해줘"),
                     ],
                 )
             )
         ]
+        quick_replies = DEFAULT_KAKAO_QUICK_REPLIES
     else:
         outputs = [
             KakaoSimpleTextOutput(
                 simpleText=KakaoSimpleText(text=detail)
             )
         ]
+        quick_replies = DEFAULT_KAKAO_QUICK_REPLIES
 
     return KakaoWebhookResponse(
         data={
@@ -106,10 +135,7 @@ def build_kakao_response(
         },
         template=KakaoTemplate(
             outputs=outputs,
-            quickReplies=[
-                KakaoQuickReply(label="일정 요약", action="message", messageText="오늘 일정 요약해줘"),
-                KakaoQuickReply(label="메일 요약", action="message", messageText="최근 메일 요약해줘"),
-            ],
+            quickReplies=quick_replies,
         ),
     )
 

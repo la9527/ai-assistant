@@ -33,6 +33,10 @@ class Settings(BaseSettings):
         default="webhook/assistant-gmail-send",
         alias="N8N_GMAIL_SEND_WEBHOOK_PATH",
     )
+    n8n_gmail_reply_webhook_path: str = Field(
+        default="webhook/assistant-gmail-reply",
+        alias="N8N_GMAIL_REPLY_WEBHOOK_PATH",
+    )
     n8n_webhook_token: str = Field(default="", alias="N8N_WEBHOOK_TOKEN")
     local_llm_provider: str = Field(default="ollama", alias="LOCAL_LLM_PROVIDER")
     local_llm_base_url: str = Field(default="http://localhost:11434/v1", alias="LOCAL_LLM_BASE_URL")
