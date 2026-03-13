@@ -1,6 +1,7 @@
 {
   "name": "assistant-automation",
   "active": true,
+  "id": "FFabQKLkJ61EF3c7",
   "nodes": [
     {
       "parameters": {
@@ -15,21 +16,71 @@
       "typeVersion": 2.1,
       "position": [
         260,
-        300
+        260
       ],
       "webhookId": "assistant-automation"
     },
     {
       "parameters": {
-        "jsCode": "const payload = $json.body ?? $json;\nconst message = String(payload.message ?? '').trim();\nconst channel = String(payload.channel ?? 'unknown');\nconst lower = message.toLowerCase();\nlet reply = '자동화 요청을 접수했습니다. 세부 workflow 연결 후 결과를 전달하겠습니다.';\nlet action = 'generic';\nif (lower.includes('일정') || lower.includes('calendar') || lower.includes('캘린더')) {\n  action = 'calendar-summary';\n  reply = '캘린더 자동화 경로로 요청을 접수했습니다. 실제 Google Calendar 자격 증명이 연결되면 오늘 일정을 조회하도록 확장할 수 있습니다.';\n} else if (lower.includes('메일') || lower.includes('email') || lower.includes('gmail')) {\n  action = 'gmail-summary';\n  reply = '메일 자동화 경로로 요청을 접수했습니다. 실제 Gmail 자격 증명이 연결되면 최근 메일 요약을 반환하도록 확장할 수 있습니다.';\n} else if (lower.includes('노션') || lower.includes('notion')) {\n  action = 'notion-update';\n  reply = '노션 자동화 경로로 요청을 접수했습니다. 실제 Notion 자격 증명이 연결되면 페이지 조회나 저장 작업으로 확장할 수 있습니다.';\n}\nreturn [{ json: { reply, action, channel, session_id: payload.session_id ?? null, user_id: payload.user_id ?? null } }];"
+        "jsCode": "const payload = $json.body ?? $json;\nconst message = String(payload.message ?? '').trim();\nconst parts = Object.fromEntries(new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date()).filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]));\nconst dateLabel = `${parts.year}-${parts.month}-${parts.day}`;\nreturn [{ json: { message, channel: String(payload.channel ?? 'unknown'), session_id: payload.session_id ?? null, user_id: payload.user_id ?? null, timezone: 'Asia/Seoul', timeMin: `${dateLabel}T00:00:00+09:00`, timeMax: `${dateLabel}T23:59:59+09:00` } }];"
       },
-      "id": "code-node",
-      "name": "Build Automation Reply",
+      "id": "normalize-node",
+      "name": "Normalize Request",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
         520,
-        300
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "event",
+        "operation": "getAll",
+        "calendar": {
+          "mode": "list",
+          "value": "primary"
+        },
+        "returnAll": false,
+        "limit": 20,
+        "timeMin": "={{ $json.timeMin }}",
+        "timeMax": "={{ $json.timeMax }}",
+        "options": {
+          "singleEvents": true,
+          "orderBy": "startTime",
+          "timeZone": {
+            "mode": "id",
+            "value": "Asia/Seoul"
+          }
+        }
+      },
+      "id": "calendar-node",
+      "name": "Get Today Calendar Events",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        820,
+        260
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "ICwN7bJllVyejRa7",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const events = $input.all().map((item) => item.json).filter((event) => event && (event.summary || event.start || event.id));\nconst formatTime = (value) => new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value));\nif (!events.length) {\n  return [{ json: { reply: '오늘 등록된 일정이 없습니다.', action: 'calendar-summary', count: 0 } }];\n}\nconst lines = events.slice(0, 5).map((event) => {\n  const title = event.summary || '제목 없는 일정';\n  const allDay = Boolean(event.start?.date) && !event.start?.dateTime;\n  if (allDay) {\n    return `종일 ${title}`;\n  }\n  const start = event.start?.dateTime ? formatTime(event.start.dateTime) : '';\n  const end = event.end?.dateTime ? formatTime(event.end.dateTime) : '';\n  return end ? `${start}-${end} ${title}` : `${start} ${title}`;\n});\nconst extra = events.length > 5 ? ` 외 ${events.length - 5}건` : '';\nreturn [{ json: { reply: `오늘 일정은 ${lines.join(', ')}${extra}입니다.`, action: 'calendar-summary', count: events.length } }];"
+      },
+      "id": "summary-node",
+      "name": "Summarize Calendar Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1080,
+        260
       ]
     },
     {
@@ -43,8 +94,8 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.4,
       "position": [
-        800,
-        300
+        1340,
+        260
       ]
     }
   ],
@@ -53,14 +104,36 @@
       "main": [
         [
           {
-            "node": "Build Automation Reply",
+            "node": "Normalize Request",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Build Automation Reply": {
+    "Normalize Request": {
+      "main": [
+        [
+          {
+            "node": "Get Today Calendar Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Today Calendar Events": {
+      "main": [
+        [
+          {
+            "node": "Summarize Calendar Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize Calendar Events": {
       "main": [
         [
           {
@@ -74,6 +147,6 @@
   },
   "settings": {},
   "pinData": {},
-  "versionId": "7df57859-9a9f-4cef-9db7-automation001",
+  "versionId": "acb30845-7f3a-4ef6-b0b4-calendar-live-001",
   "tags": []
 }

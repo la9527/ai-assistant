@@ -63,10 +63,16 @@ services:
     image: n8nio/n8n:1.111.0
     env_file:
       - ../../.env
+    ports:
+      - "5678:5678"
     environment:
       DB_SQLITE_POOL_SIZE: ${DB_SQLITE_POOL_SIZE:-2}
+      N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL:-http://127.0.0.1:5678}
       N8N_BLOCK_ENV_ACCESS_IN_NODE: ${N8N_BLOCK_ENV_ACCESS_IN_NODE:-false}
       N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: ${N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS:-false}
+      N8N_HOST: ${N8N_HOST:-127.0.0.1}
+      N8N_PORT: ${N8N_PORT:-5678}
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
       N8N_RUNNERS_ENABLED: ${N8N_RUNNERS_ENABLED:-true}
     volumes:
       - n8n_data:/home/node/.n8n

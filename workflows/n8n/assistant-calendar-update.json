@@ -1,0 +1,176 @@
+{
+  "name": "assistant-calendar-update",
+  "active": true,
+  "id": "HkD3r2nqa1Update01",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "assistant-calendar-update",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "update-webhook-node",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [260, 320],
+      "webhookId": "assistant-calendar-update"
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $json.body ?? $json;\nif (!payload.search_title || !payload.start_at || !payload.end_at) {\n  return [{ json: { reply: '일정 변경 payload가 올바르지 않습니다.', action: 'calendar-update-error' } }];\n}\nreturn [{ json: { search_title: String(payload.search_title), new_title: String(payload.new_title ?? payload.search_title), start_at: String(payload.start_at), end_at: String(payload.end_at), search_time_min: String(payload.search_time_min ?? payload.start_at), search_time_max: String(payload.search_time_max ?? payload.end_at) } }];"
+      },
+      "id": "normalize-update-node",
+      "name": "Normalize Update Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 320]
+    },
+    {
+      "parameters": {
+        "resource": "event",
+        "operation": "getAll",
+        "calendar": {
+          "mode": "list",
+          "value": "primary"
+        },
+        "returnAll": false,
+        "limit": 1,
+        "timeMin": "={{ $('Normalize Update Request').first().json.search_time_min }}",
+        "timeMax": "={{ $('Normalize Update Request').first().json.search_time_max }}",
+        "options": {
+          "singleEvents": true,
+          "orderBy": "startTime",
+          "query": "={{ $('Normalize Update Request').first().json.search_title }}",
+          "timeZone": {
+            "mode": "id",
+            "value": "Asia/Seoul"
+          }
+        }
+      },
+      "id": "search-event-node",
+      "name": "Search Matching Event",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [820, 320],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "ICwN7bJllVyejRa7",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "event-exists-check",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "event-exists-node",
+      "name": "Event Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1080, 320]
+    },
+    {
+      "parameters": {
+        "resource": "event",
+        "operation": "update",
+        "calendar": {
+          "mode": "list",
+          "value": "primary"
+        },
+        "eventId": "={{ $json.id }}",
+        "modifyTarget": "instance",
+        "useDefaultReminders": true,
+        "updateFields": {
+          "start": "={{ $('Normalize Update Request').first().json.start_at }}",
+          "end": "={{ $('Normalize Update Request').first().json.end_at }}",
+          "summary": "={{ $('Normalize Update Request').first().json.new_title }}"
+        }
+      },
+      "id": "update-event-node",
+      "name": "Update Calendar Event",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [1340, 220],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "ICwN7bJllVyejRa7",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const event = $json;\nconst formatTime = (value) => new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value));\nconst title = event.summary || '제목 없는 일정';\nconst start = event.start?.dateTime ? formatTime(event.start.dateTime) : (event.start?.date || '날짜 미확인');\nconst end = event.end?.dateTime ? formatTime(event.end.dateTime) : '';\nreturn [{ json: { reply: end ? `${title} 일정을 ${start}부터 ${end}까지로 변경했습니다.` : `${title} 일정을 변경했습니다.`, action: 'calendar-update', event_id: event.id || '' } }];"
+      },
+      "id": "update-summary-node",
+      "name": "Summarize Updated Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1600, 220]
+    },
+    {
+      "parameters": {
+        "jsCode": "const title = $('Normalize Update Request').first().json.search_title;\nreturn [{ json: { reply: `변경할 일정 '${title}' 을 찾지 못했습니다. 제목을 더 구체적으로 알려주세요.`, action: 'calendar-update-not-found' } }];"
+      },
+      "id": "not-found-node",
+      "name": "Build Not Found Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 420]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "update-respond-node",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [1860, 320]
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Normalize Update Request", "type": "main", "index": 0 }]] },
+    "Normalize Update Request": { "main": [[{ "node": "Search Matching Event", "type": "main", "index": 0 }]] },
+    "Search Matching Event": { "main": [[{ "node": "Event Exists?", "type": "main", "index": 0 }]] },
+    "Event Exists?": {
+      "main": [
+        [{ "node": "Update Calendar Event", "type": "main", "index": 0 }],
+        [{ "node": "Build Not Found Reply", "type": "main", "index": 0 }]
+      ]
+    },
+    "Update Calendar Event": { "main": [[{ "node": "Summarize Updated Event", "type": "main", "index": 0 }]] },
+    "Summarize Updated Event": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] },
+    "Build Not Found Reply": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] }
+  },
+  "settings": {},
+  "pinData": {},
+  "versionId": "calendar-update-live-001",
+  "tags": []
+}

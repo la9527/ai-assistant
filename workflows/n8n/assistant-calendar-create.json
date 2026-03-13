@@ -1,0 +1,92 @@
+{
+  "name": "assistant-calendar-create",
+  "active": true,
+  "id": "HkD3r2nqa1Create01",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "assistant-calendar-create",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "create-webhook-node",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [260, 260],
+      "webhookId": "assistant-calendar-create"
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $json.body ?? $json;\nif (!payload.title || !payload.start_at || !payload.end_at) {\n  return [{ json: { reply: '일정 생성 payload가 올바르지 않습니다.', action: 'calendar-create-error' } }];\n}\nreturn [{ json: { title: String(payload.title), start_at: String(payload.start_at), end_at: String(payload.end_at), description: String(payload.message ?? ''), location: String(payload.location ?? '') } }];"
+      },
+      "id": "normalize-create-node",
+      "name": "Normalize Create Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 260]
+    },
+    {
+      "parameters": {
+        "resource": "event",
+        "operation": "create",
+        "calendar": {
+          "mode": "list",
+          "value": "primary"
+        },
+        "start": "={{ $json.start_at }}",
+        "end": "={{ $json.end_at }}",
+        "useDefaultReminders": true,
+        "additionalFields": {
+          "summary": "={{ $json.title }}",
+          "description": "={{ $json.description }}",
+          "location": "={{ $json.location }}"
+        }
+      },
+      "id": "calendar-create-node",
+      "name": "Create Calendar Event",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [820, 260],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "ICwN7bJllVyejRa7",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const event = $json;\nconst formatTime = (value) => new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value));\nconst title = event.summary || '제목 없는 일정';\nconst start = event.start?.dateTime ? formatTime(event.start.dateTime) : (event.start?.date || '날짜 미확인');\nconst end = event.end?.dateTime ? formatTime(event.end.dateTime) : '';\nreturn [{ json: { reply: end ? `${start}부터 ${end}까지 ${title} 일정을 생성했습니다.` : `${start} ${title} 일정을 생성했습니다.`, action: 'calendar-create', event_id: event.id || '' } }];"
+      },
+      "id": "create-summary-node",
+      "name": "Summarize Created Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1080, 260]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "create-respond-node",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [1340, 260]
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Normalize Create Request", "type": "main", "index": 0 }]] },
+    "Normalize Create Request": { "main": [[{ "node": "Create Calendar Event", "type": "main", "index": 0 }]] },
+    "Create Calendar Event": { "main": [[{ "node": "Summarize Created Event", "type": "main", "index": 0 }]] },
+    "Summarize Created Event": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] }
+  },
+  "settings": {},
+  "pinData": {},
+  "versionId": "calendar-create-live-001",
+  "tags": []
+}

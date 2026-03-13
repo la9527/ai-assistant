@@ -119,6 +119,15 @@ Kakao 채널을 추가한다.
 ## 핵심 설계 문서
 
 - [docs/architecture.md](docs/architecture.md)
+- [docs/google-calendar-integration.md](docs/google-calendar-integration.md)
+- [docs/gmail-integration.md](docs/gmail-integration.md)
+
+## 현재 검증된 자동화 범위
+
+- Google Calendar 오늘 일정 요약
+- Google Calendar 일정 생성, 변경, 삭제 승인 실행
+- Gmail 최근 메일 요약
+- Gmail 메일 초안 작성과 실제 발송 승인 실행
 
 ## OpenClaw 반영 확장 방향
 

@@ -1,0 +1,80 @@
+{
+  "name": "assistant-gmail-summary",
+  "active": true,
+  "id": "HkD3r2nqa1Gmail01",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "assistant-gmail-summary",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "gmail-webhook-node",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [260, 260],
+      "webhookId": "assistant-gmail-summary"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "message",
+        "operation": "getAll",
+        "returnAll": false,
+        "limit": 5,
+        "simple": false,
+        "filters": {
+          "labelIds": [
+            "INBOX"
+          ],
+          "q": "newer_than:7d"
+        }
+      },
+      "id": "gmail-fetch-node",
+      "name": "Get Recent Gmail Messages",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [560, 260],
+      "alwaysOutputData": true,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "uwgSMn8aAz0uOjq6",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const messages = $input.all().map((item) => item.json).filter((mail) => mail && (mail.id || mail.payload || mail.snippet));\nif (!messages.length) {\n  return [{ json: { reply: '최근 7일 이내 받은편지함 메일이 없습니다.', action: 'gmail-summary', count: 0 } }];\n}\nconst readHeader = (headers, key) => {\n  if (!Array.isArray(headers)) return '';\n  const matched = headers.find((header) => String(header.name || '').toLowerCase() === key.toLowerCase());\n  return matched?.value || '';\n};\nconst decodeSender = (value) => value || '발신자 미상';\nconst lines = messages.slice(0, 5).map((mail, index) => {\n  const headers = mail.payload?.headers || [];\n  const subject = mail.subject || readHeader(headers, 'Subject') || mail.snippet || '제목 없음';\n  const sender = decodeSender(mail.from?.text || readHeader(headers, 'From'));\n  return `${index + 1}. ${sender} - ${subject}`;\n});\nreturn [{ json: { reply: `최근 메일 요약입니다. ${lines.join(' / ')}`, action: 'gmail-summary', count: messages.length } }];"
+      },
+      "id": "gmail-summary-node",
+      "name": "Summarize Gmail Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [860, 260]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "gmail-respond-node",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [1160, 260]
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Get Recent Gmail Messages", "type": "main", "index": 0 }]] },
+    "Get Recent Gmail Messages": { "main": [[{ "node": "Summarize Gmail Messages", "type": "main", "index": 0 }]] },
+    "Summarize Gmail Messages": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] }
+  },
+  "settings": {},
+  "pinData": {},
+  "versionId": "gmail-summary-live-002",
+  "tags": []
+}

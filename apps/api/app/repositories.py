@@ -1,3 +1,4 @@
+from sqlalchemy import desc
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -26,8 +27,14 @@ def update_session_message(db: Session, session: AssistantSession, message: str)
     return session
 
 
-def create_task_run(db: Session, session_id: str | None, task_type: str, detail: str | None) -> TaskRun:
-    task = TaskRun(session_id=session_id, task_type=task_type, detail=detail, status="completed")
+def create_task_run(
+    db: Session,
+    session_id: str | None,
+    task_type: str,
+    detail: str | None,
+    status: str = "completed",
+) -> TaskRun:
+    task = TaskRun(session_id=session_id, task_type=task_type, detail=detail, status=status)
     db.add(task)
     db.commit()
     db.refresh(task)
@@ -36,6 +43,31 @@ def create_task_run(db: Session, session_id: str | None, task_type: str, detail:
 
 def get_task_run(db: Session, task_id: str) -> TaskRun | None:
     return db.get(TaskRun, task_id)
+
+
+def get_latest_task_run(
+    db: Session,
+    session_id: str,
+    task_type: str | None = None,
+    status: str | None = None,
+) -> TaskRun | None:
+    stmt = select(TaskRun).where(TaskRun.session_id == session_id)
+    if task_type is not None:
+        stmt = stmt.where(TaskRun.task_type == task_type)
+    if status is not None:
+        stmt = stmt.where(TaskRun.status == status)
+    stmt = stmt.order_by(desc(TaskRun.created_at)).limit(1)
+    return db.execute(stmt).scalar_one_or_none()
+
+
+def update_task_run_status(db: Session, task: TaskRun, status: str, detail: str | None = None) -> TaskRun:
+    task.status = status
+    if detail is not None:
+        task.detail = detail
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return task
 
 
 def get_approval_ticket(db: Session, ticket_id: str) -> ApprovalTicket | None:

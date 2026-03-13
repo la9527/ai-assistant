@@ -50,7 +50,15 @@
 - `workflows/n8n/assistant-automation.json` 기준의 샘플 webhook workflow 추가
 - Kakao 응답은 `simpleText` 외에 `basicCard`와 `quickReplies`까지 확장 완료
 - `n8n` workflow import 및 활성화 후 `route=n8n` 경로 검증 완료
-- 실제 Gmail, Google Calendar, Notion 자격 증명 연결만 남아 있다.
+- Google Calendar OAuth credential 연결 완료
+- `assistant-automation` workflow를 실제 Google Calendar 조회 흐름으로 교체 완료
+- `POST /assistant/api/chat`, `POST /assistant/api/kakao/webhook` 기준 실제 Calendar 조회 검증 완료
+- 일정 생성과 변경은 승인 티켓 기반 실행 흐름까지 검증 완료
+- 일정 삭제도 승인 티켓 기반 실행 흐름으로 확장 완료
+- Gmail 경로는 `assistant-gmail-summary` workflow로 추가 완료
+- Gmail OAuth credential 연결 완료
+- `assistant-gmail-summary` workflow를 live 메일 요약 흐름으로 교체 완료
+- Gmail 초안 작성과 메일 발송도 승인 기반 workflow로 확장 완료
 
 ## 5단계: 기능 확장 순서
 
@@ -67,5 +75,5 @@
 - Docker Desktop 설치와 최초 실행
 - LM Studio 설치와 API 서버 활성화
 - Slack 앱 생성과 토큰 발급
-- Gmail, Calendar, Notion API 자격 증명 발급
+- Gmail, Calendar API 자격 증명 발급
 - macOS 자동화 권한 부여

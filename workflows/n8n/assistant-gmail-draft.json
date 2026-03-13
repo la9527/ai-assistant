@@ -1,0 +1,89 @@
+{
+  "name": "assistant-gmail-draft",
+  "active": true,
+  "id": "HkD3r2nqa1GmailDraft01",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "assistant-gmail-draft",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "gmail-draft-webhook-node",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [260, 260],
+      "webhookId": "assistant-gmail-draft"
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $json.body ?? $json;\nif (!payload.send_to || !payload.subject || !payload.message) {\n  return [{ json: { reply: '메일 초안 payload가 올바르지 않습니다.', action: 'gmail-draft-error' } }];\n}\nreturn [{ json: { send_to: String(payload.send_to), subject: String(payload.subject), message: String(payload.message), email_type: String(payload.email_type ?? 'text'), cc_list: String(payload.cc_list ?? ''), bcc_list: String(payload.bcc_list ?? '') } }];"
+      },
+      "id": "normalize-gmail-draft-node",
+      "name": "Normalize Draft Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 260]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "draft",
+        "operation": "create",
+        "subject": "={{ $json.subject }}",
+        "emailType": "={{ $json.email_type }}",
+        "message": "={{ $json.message }}",
+        "options": {
+          "sendTo": "={{ $json.send_to }}",
+          "ccList": "={{ $json.cc_list }}",
+          "bccList": "={{ $json.bcc_list }}"
+        }
+      },
+      "id": "create-gmail-draft-node",
+      "name": "Create Gmail Draft",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [820, 260],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "uwgSMn8aAz0uOjq6",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const request = $('Normalize Draft Request').first().json;\nconst draft = $json;\nconst reply = `${request.send_to} 수신 메일 초안을 작성했습니다. 제목은 '${request.subject}' 입니다.`;\nreturn [{ json: { reply, action: 'gmail-draft', draft_id: String(draft.id ?? '') } }];"
+      },
+      "id": "gmail-draft-summary-node",
+      "name": "Summarize Draft Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1080, 260]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "gmail-draft-respond-node",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [1340, 260]
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Normalize Draft Request", "type": "main", "index": 0 }]] },
+    "Normalize Draft Request": { "main": [[{ "node": "Create Gmail Draft", "type": "main", "index": 0 }]] },
+    "Create Gmail Draft": { "main": [[{ "node": "Summarize Draft Result", "type": "main", "index": 0 }]] },
+    "Summarize Draft Result": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] }
+  },
+  "settings": {},
+  "pinData": {},
+  "versionId": "gmail-draft-live-001",
+  "tags": []
+}

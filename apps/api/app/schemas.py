@@ -24,6 +24,7 @@ class ChatResponse(BaseModel):
     local_llm_provider: str
     model: str
     session_id: str
+    approval_ticket_id: str | None = None
 
 
 class KakaoWebhookUser(BaseModel):
@@ -118,5 +119,7 @@ class ApprovalTicketResponse(BaseModel):
     action_type: str
     status: str
     actor_id: str | None
+    execution_reply: str | None = None
+    route: str | None = None
     created_at: datetime
     updated_at: datetime

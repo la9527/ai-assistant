@@ -1,0 +1,183 @@
+{
+  "name": "assistant-calendar-delete",
+  "active": true,
+  "id": "HkD3r2nqa1Delete01",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "assistant-calendar-delete",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "delete-webhook-node",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [260, 320],
+      "webhookId": "assistant-calendar-delete"
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $json.body ?? $json;\nif (!payload.search_title) {\n  return [{ json: { reply: '일정 삭제 payload가 올바르지 않습니다.', action: 'calendar-delete-error' } }];\n}\nreturn [{ json: { search_title: String(payload.search_title), search_time_min: String(payload.search_time_min ?? ''), search_time_max: String(payload.search_time_max ?? ''), timezone: String(payload.timezone ?? 'Asia/Seoul') } }];"
+      },
+      "id": "normalize-delete-node",
+      "name": "Normalize Delete Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 320]
+    },
+    {
+      "parameters": {
+        "resource": "event",
+        "operation": "getAll",
+        "calendar": {
+          "mode": "list",
+          "value": "primary"
+        },
+        "returnAll": false,
+        "limit": 1,
+        "timeMin": "={{ $('Normalize Delete Request').first().json.search_time_min }}",
+        "timeMax": "={{ $('Normalize Delete Request').first().json.search_time_max }}",
+        "options": {
+          "singleEvents": true,
+          "orderBy": "startTime",
+          "query": "={{ $('Normalize Delete Request').first().json.search_title }}",
+          "timeZone": {
+            "mode": "id",
+            "value": "Asia/Seoul"
+          }
+        }
+      },
+      "id": "search-delete-event-node",
+      "name": "Search Event To Delete",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [820, 320],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "ICwN7bJllVyejRa7",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "delete-event-exists-check",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "delete-event-exists-node",
+      "name": "Event Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1080, 320]
+    },
+    {
+      "parameters": {
+        "jsCode": "const event = $json;\nreturn [{ json: { event_id: String(event.id || ''), title: String(event.summary || '제목 없는 일정'), start_at: String(event.start?.dateTime || event.start?.date || ''), end_at: String(event.end?.dateTime || event.end?.date || '') } }];"
+      },
+      "id": "build-delete-context-node",
+      "name": "Build Delete Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 220]
+    },
+    {
+      "parameters": {
+        "resource": "event",
+        "operation": "delete",
+        "calendar": {
+          "mode": "list",
+          "value": "primary"
+        },
+        "eventId": "={{ $json.event_id }}",
+        "options": {
+          "sendUpdates": "none"
+        }
+      },
+      "id": "delete-calendar-event-node",
+      "name": "Delete Calendar Event",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [1600, 220],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "ICwN7bJllVyejRa7",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const context = $('Build Delete Context').first().json;\nconst formatTime = (value) => value ? new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value)) : '';\nconst start = context.start_at ? formatTime(context.start_at) : '';\nconst end = context.end_at ? formatTime(context.end_at) : '';\nconst reply = start && end ? `${start}부터 ${end}까지 ${context.title} 일정을 삭제했습니다.` : `${context.title} 일정을 삭제했습니다.`;\nreturn [{ json: { reply, action: 'calendar-delete', event_id: context.event_id } }];"
+      },
+      "id": "delete-summary-node",
+      "name": "Summarize Deleted Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1860, 220]
+    },
+    {
+      "parameters": {
+        "jsCode": "const title = $('Normalize Delete Request').first().json.search_title;\nreturn [{ json: { reply: `삭제할 일정 '${title}' 을 찾지 못했습니다. 제목이나 시간을 더 구체적으로 알려주세요.`, action: 'calendar-delete-not-found' } }];"
+      },
+      "id": "delete-not-found-node",
+      "name": "Build Delete Not Found Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 420]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "delete-respond-node",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [2120, 320]
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Normalize Delete Request", "type": "main", "index": 0 }]] },
+    "Normalize Delete Request": { "main": [[{ "node": "Search Event To Delete", "type": "main", "index": 0 }]] },
+    "Search Event To Delete": { "main": [[{ "node": "Event Exists?", "type": "main", "index": 0 }]] },
+    "Event Exists?": {
+      "main": [
+        [{ "node": "Build Delete Context", "type": "main", "index": 0 }],
+        [{ "node": "Build Delete Not Found Reply", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Delete Context": { "main": [[{ "node": "Delete Calendar Event", "type": "main", "index": 0 }]] },
+    "Delete Calendar Event": { "main": [[{ "node": "Summarize Deleted Event", "type": "main", "index": 0 }]] },
+    "Summarize Deleted Event": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] },
+    "Build Delete Not Found Reply": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] }
+  },
+  "settings": {},
+  "pinData": {},
+  "versionId": "calendar-delete-live-001",
+  "tags": []
+}

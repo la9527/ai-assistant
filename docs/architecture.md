@@ -209,8 +209,8 @@ LangGraph에 과도한 영역:
 
 - `workflows/n8n/assistant-automation.json`
 - webhook 경로는 `/webhook/assistant-automation`
-- 일정, 메일, 노션 키워드 요청을 받아 placeholder 자동화 응답을 반환한다.
-- 실제 Gmail, Google Calendar, Notion 자격 증명이 준비되면 같은 workflow를 외부 SaaS 노드 중심으로 교체한다.
+- 현재는 `assistant-automation`, `assistant-calendar-create`, `assistant-calendar-update`, `assistant-calendar-delete`, `assistant-gmail-summary`, `assistant-gmail-draft`, `assistant-gmail-send` workflow로 분리되어 있다.
+- 캘린더 쓰기와 메일 초안·발송은 모두 승인 티켓 이후에만 실행한다.
 
 ## 5. 로컬 LLM 런타임과 모델 계층
 
