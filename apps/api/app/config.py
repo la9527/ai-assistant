@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     local_llm_base_url: str = Field(default="http://localhost:11434/v1", alias="LOCAL_LLM_BASE_URL")
     local_llm_model: str = Field(default="qwen3:8b", alias="LOCAL_LLM_MODEL")
     browser_runner_base_url: str = Field(default="http://browser-runner:8080", alias="BROWSER_RUNNER_BASE_URL")
+    macos_automation_base_url: str = Field(default="http://host.docker.internal:8091", alias="MACOS_AUTOMATION_BASE_URL")
     slack_bot_token: str = Field(default="", alias="SLACK_BOT_TOKEN")
     slack_app_token: str = Field(default="", alias="SLACK_APP_TOKEN")
     slack_signing_secret: str = Field(default="", alias="SLACK_SIGNING_SECRET")

@@ -1040,6 +1040,8 @@ Mac mini
 
 현재 `browser-runner`는 Playwright 기반 read-only 추출 엔드포인트 `/browse/read`를 제공하고, FastAPI는 이를 `/assistant/api/browser/read` 경로로 프록시한다.
 
+macOS 자동화는 호스트 프로세스 `macos_runner`가 맡고, 현재는 `POST /macos/notes` 내부 엔드포인트를 통해 Notes 앱에 메모를 생성한다. FastAPI는 승인된 요청에 한해 이 호스트 runner를 호출한다.
+
 이 기준을 지키면 API 장애와 브라우저 자동화 장애를 분리하기 쉽고, 장기 작업을 웹 요청과 분리할 수 있다.
 
 ### 3. 네트워크 연결 원칙

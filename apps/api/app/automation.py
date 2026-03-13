@@ -34,6 +34,8 @@ GMAIL_SEND_KEYWORDS = ("발송", "send")
 GMAIL_SUMMARY_KEYWORDS = ("요약", "최근", "편지함", "받은편지함", "inbox")
 GMAIL_REPLY_KEYWORDS = ("답장", "회신", "reply")
 GMAIL_THREAD_KEYWORDS = ("이어", "이어서", "계속", "thread", "스레드")
+MACOS_NOTE_KEYWORDS = ("메모", "노트", "notes")
+MACOS_NOTE_CREATE_KEYWORDS = ("추가", "작성", "저장", "기록", "남겨", "만들")
 
 EMAIL_ADDRESS_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 URL_PATTERN = re.compile(r"https?://[^\s,]+", re.IGNORECASE)
@@ -51,6 +53,7 @@ ACTION_LABELS = {
     "gmail_send": "발송",
     "gmail_reply": "회신",
     "gmail_thread_reply": "thread 이어쓰기",
+    "macos_note_create": "macOS 메모 생성",
 }
 
 GMAIL_COMPOSE_STOP_LABELS = (
@@ -88,6 +91,17 @@ GMAIL_COMPOSE_STOP_LABELS = (
     "초안 만들어 줘",
 )
 
+MACOS_NOTE_ACTION_STOP_LABELS = (
+    "추가",
+    "작성",
+    "저장",
+    "기록",
+    "남겨",
+    "만들",
+    "해줘",
+    "해주세요",
+)
+
 
 def classify_message_intent(message: str) -> str:
     lowered = message.lower()
@@ -121,6 +135,11 @@ def classify_message_intent(message: str) -> str:
         return "gmail_send"
     if has_gmail_keyword:
         return "gmail_summary"
+
+    if any(keyword in lowered for keyword in MACOS_NOTE_KEYWORDS) and any(
+        keyword in message for keyword in MACOS_NOTE_CREATE_KEYWORDS
+    ):
+        return "macos_note_create"
     return "chat"
 
 
@@ -245,6 +264,29 @@ def process_message(
             "action_type": None,
         }
 
+    if intent == "macos_note_create":
+        parsed = parse_macos_note_request(message)
+        if parsed is None:
+            return {
+                "reply": "macOS 메모 요청을 이해하지 못했습니다. 예: 메모에 제목 주간 점검 내용 브라우저 러너와 Slack 상태 확인 저장해줘",
+                "route": "validation_error",
+                "action_type": intent,
+            }
+        if not approval_granted:
+            return {
+                "reply": "macOS 메모 생성 요청입니다. 승인 후 AppleScript로 실행합니다.",
+                "route": "approval_required",
+                "action_type": intent,
+            }
+        reply = run_macos_automation(message, channel, session_id, user_id, "macos/notes", parsed)
+        if reply is not None:
+            return {"reply": reply, "route": "macos", "action_type": intent}
+        return {
+            "reply": "승인된 macOS 메모 실행에 실패했습니다. 호스트 macOS runner 실행 상태와 Notes 자동화 권한을 확인하세요.",
+            "route": "macos_fallback",
+            "action_type": intent,
+        }
+
     reply, route = generate_local_reply(message, channel)
     return {"reply": reply, "route": route, "action_type": None}
 
@@ -283,6 +325,38 @@ def run_n8n_automation(
             if isinstance(body.get("message"), str) and body["message"].strip():
                 return body["message"].strip()
         return "자동화 작업을 접수했습니다. 결과를 후속 메시지로 전달하겠습니다."
+    except Exception:
+        return None
+
+
+def run_macos_automation(
+    message: str,
+    channel: str,
+    session_id: str,
+    user_id: str | None,
+    endpoint_path: str,
+    extra_payload: dict[str, str],
+) -> str | None:
+    endpoint = f"{settings.macos_automation_base_url.rstrip('/')}/{endpoint_path.lstrip('/')}"
+    payload = {
+        "message": message,
+        "channel": channel,
+        "session_id": session_id,
+        "user_id": user_id,
+    }
+    payload.update(extra_payload)
+
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            response = client.post(endpoint, json=payload)
+            response.raise_for_status()
+        body = response.json()
+        if isinstance(body, dict):
+            if isinstance(body.get("reply"), str) and body["reply"].strip():
+                return body["reply"].strip()
+            if isinstance(body.get("message"), str) and body["message"].strip():
+                return body["message"].strip()
+        return "macOS 자동화 작업을 실행했습니다."
     except Exception:
         return None
 
@@ -438,6 +512,35 @@ def parse_gmail_reply_request(message: str, intent: str) -> dict[str, str] | Non
     if not result.get("thread_id") and not result.get("message_id") and not result.get("search_query"):
         return None
 
+    return result
+
+
+def parse_macos_note_request(message: str) -> dict[str, str] | None:
+    title = _extract_labeled_segment(
+        message,
+        labels=("제목", "title"),
+        stop_labels=("내용", "본문", "message", "폴더", "folder", *MACOS_NOTE_ACTION_STOP_LABELS),
+    )
+    body = _extract_labeled_segment(
+        message,
+        labels=("내용", "본문", "message"),
+        stop_labels=("폴더", "folder", *MACOS_NOTE_ACTION_STOP_LABELS),
+    )
+    folder = _extract_labeled_segment(
+        message,
+        labels=("폴더", "folder"),
+        stop_labels=MACOS_NOTE_ACTION_STOP_LABELS,
+    )
+
+    if not title or not body:
+        return None
+
+    result = {
+        "title": title,
+        "body": body,
+    }
+    if folder:
+        result["folder"] = folder
     return result
 
 
