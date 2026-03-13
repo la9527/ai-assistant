@@ -1,9 +1,14 @@
 [project]
 name = "ai-assistant-browser-runner"
 version = "0.1.0"
-description = "AI Assistant browser runner placeholder"
+description = "AI Assistant browser runner"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+	"fastapi>=0.115.0",
+	"playwright>=1.52.0",
+	"pydantic>=2.10.0",
+	"uvicorn[standard]>=0.34.0",
+]
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

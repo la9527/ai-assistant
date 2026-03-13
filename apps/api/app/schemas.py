@@ -27,6 +27,28 @@ class ChatResponse(BaseModel):
     approval_ticket_id: str | None = None
 
 
+class BrowserReadRequest(BaseModel):
+    url: str
+    session_id: str | None = None
+    channel: str = "web"
+    wait_selector: str | None = Field(default=None, alias="waitSelector")
+    timeout_ms: int = Field(default=15000, alias="timeoutMs", ge=1000, le=60000)
+    max_chars: int = Field(default=4000, alias="maxChars", ge=500, le=12000)
+
+
+class BrowserReadResponse(BaseModel):
+    session_id: str
+    task_id: str = Field(alias="taskId")
+    route: str
+    url: str
+    final_url: str = Field(alias="finalUrl")
+    title: str
+    description: str | None = None
+    headings: list[str]
+    content_excerpt: str = Field(alias="contentExcerpt")
+    fetched_at: datetime = Field(alias="fetchedAt")
+
+
 class KakaoWebhookUser(BaseModel):
     id: str | None = None
 

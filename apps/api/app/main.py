@@ -35,6 +35,8 @@ from app.repositories import update_approval_ticket_status
 from app.repositories import update_session_message
 from app.schemas import ApprovalActionRequest
 from app.schemas import ApprovalTicketResponse
+from app.schemas import BrowserReadRequest
+from app.schemas import BrowserReadResponse
 from app.schemas import ChatRequest
 from app.schemas import ChatResponse
 from app.schemas import HealthResponse
@@ -225,6 +227,58 @@ def chat(payload: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
         model=settings.local_llm.model,
         session_id=session.id,
         approval_ticket_id=approval_ticket_id,
+    )
+
+
+@app.post("/api/browser/read", response_model=BrowserReadResponse)
+async def browser_read(payload: BrowserReadRequest, db: Session = Depends(get_db)) -> BrowserReadResponse:
+    session = get_session_by_id(db, payload.session_id) if payload.session_id else None
+    if session is None:
+        session = create_session(db, channel=payload.channel, user_id=None, message=payload.url)
+    else:
+        session = update_session_message(db, session, payload.url)
+
+    task = create_task_run(
+        db,
+        session_id=session.id,
+        task_type="browser_readonly",
+        detail=payload.url,
+        status="running",
+    )
+    request_body = {
+        "url": payload.url,
+        "waitSelector": payload.wait_selector,
+        "timeoutMs": payload.timeout_ms,
+        "maxChars": payload.max_chars,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=(payload.timeout_ms / 1000) + 10.0) as client:
+            response = await client.post(
+                f"{settings.browser_runner_base_url.rstrip('/')}/browse/read",
+                json=request_body,
+            )
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        update_task_run_status(db, task, status="failed", detail=f"{payload.url}\n{exc.response.text}")
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text) from exc
+    except httpx.HTTPError as exc:
+        update_task_run_status(db, task, status="failed", detail=f"{payload.url}\n{exc}")
+        raise HTTPException(status_code=502, detail=f"browser runner unavailable: {exc}") from exc
+
+    data = response.json()
+    update_task_run_status(db, task, status="completed", detail=data.get("title") or payload.url)
+    return BrowserReadResponse(
+        session_id=session.id,
+        taskId=task.id,
+        route="browser_readonly",
+        url=str(data["url"]),
+        finalUrl=str(data["finalUrl"]),
+        title=str(data["title"]),
+        description=str(data["description"]) if data.get("description") else None,
+        headings=[str(item) for item in data.get("headings") or []],
+        contentExcerpt=str(data["contentExcerpt"]),
+        fetchedAt=data["fetchedAt"],
     )
 
 

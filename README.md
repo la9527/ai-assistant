@@ -141,11 +141,13 @@ Kakao 채널을 추가한다.
 ## 현재 남은 우선순위
 
 1. 공개 도메인 준비 후 Slack 실제 워크스페이스 연동과 토큰 기반 이벤트 검증
-2. Playwright 기반 브라우저 자동화 1개 read-only 시나리오 구현
+2. Playwright 기반 브라우저 자동화 read-only 경로를 실사용 기준으로 다듬고 승인 필요 시나리오로 확장
 3. AppleScript 기반 macOS 자동화 1개 승인 시나리오 구현
 4. LangGraph 상태 라우팅과 승인 후 재개 구조 도입
 5. 채널 통합 사용자 매핑과 장기 메모리 계층 추가
 6. 백업, 복구, 재기동 절차의 실제 검증과 문서화
+
+브라우저 자동화는 선택 프로필 서비스 `browser-runner`를 통해 분리한다. 현재는 `POST /assistant/api/browser/read`로 대상 URL의 제목, 설명, 주요 heading, 본문 일부를 read-only 방식으로 추출할 수 있다.
 
 ## OpenClaw 반영 확장 방향
 

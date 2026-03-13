@@ -4,6 +4,6 @@ WORKDIR /app
 
 COPY pyproject.toml ./
 COPY runner ./runner
-RUN pip install --no-cache-dir -U pip && pip install --no-cache-dir .
+RUN pip install --no-cache-dir -U pip && pip install --no-cache-dir . && python -m playwright install --with-deps chromium
 
 CMD ["python", "-m", "runner.main"]

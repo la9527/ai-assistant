@@ -59,6 +59,14 @@ services:
     extra_hosts:
       - host.docker.internal:host-gateway
 
+  browser-runner:
+    build:
+      context: ../../apps/browser-runner
+    environment:
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED:-1}
+    profiles:
+      - automation
+
   n8n:
     image: n8nio/n8n:1.111.0
     env_file:

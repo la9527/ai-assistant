@@ -1038,6 +1038,8 @@ Mac mini
 - `proxy`: HTTPS와 라우팅
 - `browser-runner`: 선택적 브라우저 자동화 전용 실행기
 
+현재 `browser-runner`는 Playwright 기반 read-only 추출 엔드포인트 `/browse/read`를 제공하고, FastAPI는 이를 `/assistant/api/browser/read` 경로로 프록시한다.
+
 이 기준을 지키면 API 장애와 브라우저 자동화 장애를 분리하기 쉽고, 장기 작업을 웹 요청과 분리할 수 있다.
 
 ### 3. 네트워크 연결 원칙
