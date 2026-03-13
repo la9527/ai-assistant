@@ -1,0 +1,97 @@
+services:
+  proxy:
+    image: caddy:2.10.0
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../caddy/Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - webui
+
+  webui:
+    image: ghcr.io/open-webui/open-webui:v0.8.10
+    environment:
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    volumes:
+      - openwebui_data:/app/backend/data
+    depends_on:
+      - api
+    extra_hosts:
+      - host.docker.internal:host-gateway
+
+  api:
+    build:
+      context: ../../apps/api
+    env_file:
+      - ../../.env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://app:app@postgres:5432/assistant}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      N8N_BASE_URL: ${N8N_BASE_URL:-http://n8n:5678}
+      LOCAL_LLM_BASE_URL: ${LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+      LOCAL_LLM_PROVIDER: ${LOCAL_LLM_PROVIDER:-ollama}
+      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-qwen3:8b}
+    depends_on:
+      - postgres
+      - redis
+    extra_hosts:
+      - host.docker.internal:host-gateway
+
+  worker:
+    build:
+      context: ../../apps/workers
+    env_file:
+      - ../../.env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://app:app@postgres:5432/assistant}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      LOCAL_LLM_BASE_URL: ${LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+      LOCAL_LLM_PROVIDER: ${LOCAL_LLM_PROVIDER:-ollama}
+      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-qwen3:8b}
+      WORKER_LOG_LEVEL: ${WORKER_LOG_LEVEL:-INFO}
+    depends_on:
+      - postgres
+      - redis
+    extra_hosts:
+      - host.docker.internal:host-gateway
+
+  n8n:
+    image: n8nio/n8n:1.111.0
+    env_file:
+      - ../../.env
+    environment:
+      DB_SQLITE_POOL_SIZE: ${DB_SQLITE_POOL_SIZE:-2}
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: ${N8N_BLOCK_ENV_ACCESS_IN_NODE:-false}
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: ${N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS:-false}
+      N8N_RUNNERS_ENABLED: ${N8N_RUNNERS_ENABLED:-true}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:17.5
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-assistant}
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:8.2.1
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+
+volumes:
+  caddy_data:
+  caddy_config:
+  openwebui_data:
+  n8n_data:
+  postgres_data:
+  redis_data:

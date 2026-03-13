@@ -1,0 +1,79 @@
+{
+  "name": "assistant-automation",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "assistant-automation",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-node",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        260,
+        300
+      ],
+      "webhookId": "assistant-automation"
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $json.body ?? $json;\nconst message = String(payload.message ?? '').trim();\nconst channel = String(payload.channel ?? 'unknown');\nconst lower = message.toLowerCase();\nlet reply = '자동화 요청을 접수했습니다. 세부 workflow 연결 후 결과를 전달하겠습니다.';\nlet action = 'generic';\nif (lower.includes('일정') || lower.includes('calendar') || lower.includes('캘린더')) {\n  action = 'calendar-summary';\n  reply = '캘린더 자동화 경로로 요청을 접수했습니다. 실제 Google Calendar 자격 증명이 연결되면 오늘 일정을 조회하도록 확장할 수 있습니다.';\n} else if (lower.includes('메일') || lower.includes('email') || lower.includes('gmail')) {\n  action = 'gmail-summary';\n  reply = '메일 자동화 경로로 요청을 접수했습니다. 실제 Gmail 자격 증명이 연결되면 최근 메일 요약을 반환하도록 확장할 수 있습니다.';\n} else if (lower.includes('노션') || lower.includes('notion')) {\n  action = 'notion-update';\n  reply = '노션 자동화 경로로 요청을 접수했습니다. 실제 Notion 자격 증명이 연결되면 페이지 조회나 저장 작업으로 확장할 수 있습니다.';\n}\nreturn [{ json: { reply, action, channel, session_id: payload.session_id ?? null, user_id: payload.user_id ?? null } }];"
+      },
+      "id": "code-node",
+      "name": "Build Automation Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "respond-node",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        800,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Build Automation Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Automation Reply": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "pinData": {},
+  "versionId": "7df57859-9a9f-4cef-9db7-automation001",
+  "tags": []
+}

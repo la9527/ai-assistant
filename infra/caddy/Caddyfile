@@ -1,0 +1,12 @@
+:80 {
+  encode gzip
+
+  handle /assistant/* {
+    uri strip_prefix /assistant
+    reverse_proxy api:8000
+  }
+
+  handle {
+    reverse_proxy webui:8080
+  }
+}

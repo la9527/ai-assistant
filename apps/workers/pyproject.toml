@@ -1,0 +1,10 @@
+[project]
+name = "ai-assistant-worker"
+version = "0.1.0"
+description = "AI Assistant background worker"
+requires-python = ">=3.11"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
