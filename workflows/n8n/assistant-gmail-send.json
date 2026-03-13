@@ -19,13 +19,44 @@
     },
     {
       "parameters": {
-        "jsCode": "const payload = $json.body ?? $json;\nif (!payload.send_to || !payload.subject || !payload.message) {\n  return [{ json: { reply: '메일 발송 payload가 올바르지 않습니다.', action: 'gmail-send-error' } }];\n}\nreturn [{ json: { send_to: String(payload.send_to), subject: String(payload.subject), message: String(payload.message), email_type: String(payload.email_type ?? 'text'), cc_list: String(payload.cc_list ?? ''), bcc_list: String(payload.bcc_list ?? '') } }];"
+        "jsCode": "const payload = $json.body ?? $json;\nif (!payload.send_to || !payload.subject || !payload.message) {\n  return [{ json: { reply: '메일 발송 payload가 올바르지 않습니다.', action: 'gmail-send-error' } }];\n}\nreturn [{ json: { send_to: String(payload.send_to), subject: String(payload.subject), message: String(payload.message), email_type: String(payload.email_type ?? 'text'), cc_list: String(payload.cc_list ?? ''), bcc_list: String(payload.bcc_list ?? ''), attachment_url: String(payload.attachment_url ?? '') } }];"
       },
       "id": "normalize-gmail-send-node",
       "name": "Normalize Send Request",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [520, 260]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "gmail-send-attachment-check",
+              "leftValue": "={{ $json.attachment_url }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "gmail-send-attachment-node",
+      "name": "Attachment URL Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [760, 260]
     },
     {
       "parameters": {
@@ -45,7 +76,7 @@
       "name": "Send Gmail Message",
       "type": "n8n-nodes-base.gmail",
       "typeVersion": 2.1,
-      "position": [820, 260],
+      "position": [1060, 160],
       "credentials": {
         "gmailOAuth2": {
           "id": "uwgSMn8aAz0uOjq6",
@@ -55,13 +86,77 @@
     },
     {
       "parameters": {
-        "jsCode": "const request = $('Normalize Send Request').first().json;\nconst sent = $json;\nconst reply = `${request.send_to}로 메일을 발송했습니다. 제목은 '${request.subject}' 입니다.`;\nreturn [{ json: { reply, action: 'gmail-send', message_id: String(sent.id ?? '') } }];"
+        "url": "={{ $json.attachment_url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "id": "download-send-attachment-node",
+      "name": "Download Send Attachment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1060, 360]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "build-send-attachment-item-node",
+      "name": "Merge Send Attachment Item",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [1300, 360]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $json.send_to }}",
+        "subject": "={{ $json.subject }}",
+        "emailType": "={{ $json.email_type }}",
+        "message": "={{ $json.message }}",
+        "options": {
+          "ccList": "={{ $json.cc_list }}",
+          "bccList": "={{ $json.bcc_list }}",
+          "attachmentsUi": {
+            "attachmentsBinary": [
+              {
+                "property": "data"
+              }
+            ]
+          }
+        }
+      },
+      "id": "send-gmail-message-with-attachment-node",
+      "name": "Send Gmail Message With Attachment",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1540, 360],
+      "alwaysOutputData": true,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "uwgSMn8aAz0uOjq6",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const request = $('Normalize Send Request').first().json;\nconst sent = $json;\nconst attachmentText = request.attachment_url ? ' 첨부파일 URL도 포함했습니다.' : '';\nconst reply = `${request.send_to}로 메일을 발송했습니다. 제목은 '${request.subject}' 입니다.${attachmentText}`;\nreturn [{ json: { reply, action: 'gmail-send', message_id: String(sent.id ?? '') } }];"
       },
       "id": "gmail-send-summary-node",
       "name": "Summarize Send Result",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1080, 260]
+      "position": [1780, 260]
     },
     {
       "parameters": {
@@ -73,17 +168,30 @@
       "name": "Respond to Webhook",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.4,
-      "position": [1340, 260]
+      "position": [2040, 260]
     }
   ],
   "connections": {
     "Webhook": { "main": [[{ "node": "Normalize Send Request", "type": "main", "index": 0 }]] },
-    "Normalize Send Request": { "main": [[{ "node": "Send Gmail Message", "type": "main", "index": 0 }]] },
+    "Normalize Send Request": {
+      "main": [
+        [{ "node": "Attachment URL Exists?", "type": "main", "index": 0 }, { "node": "Merge Send Attachment Item", "type": "main", "index": 1 }]
+      ]
+    },
+    "Attachment URL Exists?": {
+      "main": [
+        [{ "node": "Download Send Attachment", "type": "main", "index": 0 }],
+        [{ "node": "Send Gmail Message", "type": "main", "index": 0 }]
+      ]
+    },
     "Send Gmail Message": { "main": [[{ "node": "Summarize Send Result", "type": "main", "index": 0 }]] },
+    "Download Send Attachment": { "main": [[{ "node": "Merge Send Attachment Item", "type": "main", "index": 0 }]] },
+    "Merge Send Attachment Item": { "main": [[{ "node": "Send Gmail Message With Attachment", "type": "main", "index": 0 }]] },
+    "Send Gmail Message With Attachment": { "main": [[{ "node": "Summarize Send Result", "type": "main", "index": 0 }]] },
     "Summarize Send Result": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] }
   },
   "settings": {},
   "pinData": {},
-  "versionId": "gmail-send-live-001",
+  "versionId": "gmail-send-live-002",
   "tags": []
 }

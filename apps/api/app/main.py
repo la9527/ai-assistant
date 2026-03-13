@@ -62,9 +62,19 @@ DEFAULT_KAKAO_QUICK_REPLIES = [
         messageText="test@example.com로 제목 안부, 내용 안녕하세요 메일 초안 작성해줘",
     ),
     KakaoQuickReply(
+        label="첨부 초안",
+        action="message",
+        messageText="test@example.com로 제목 첨부 안내, 내용 첨부 확인 부탁드립니다 첨부 https://raw.githubusercontent.com/github/gitignore/main/README.md 메일 초안 작성해줘",
+    ),
+    KakaoQuickReply(
         label="메일 회신",
         action="message",
         messageText="제목 AI Assistant Gmail 발송 테스트 내용 확인했습니다 메일에 답장해줘",
+    ),
+    KakaoQuickReply(
+        label="첨부 회신",
+        action="message",
+        messageText="제목 AI Assistant Gmail 발송 테스트 내용 첨부 확인 부탁드립니다 첨부 https://raw.githubusercontent.com/github/gitignore/main/README.md 메일에 답장해줘",
     ),
 ]
 
@@ -101,7 +111,8 @@ def build_kakao_response(
         quick_replies = [
             KakaoQuickReply(label="승인", action="message", messageText=f"승인 {approval_ticket_id}"),
             KakaoQuickReply(label="거절", action="message", messageText=f"거절 {approval_ticket_id}"),
-            *DEFAULT_KAKAO_QUICK_REPLIES[:2],
+            DEFAULT_KAKAO_QUICK_REPLIES[4],
+            DEFAULT_KAKAO_QUICK_REPLIES[6],
         ]
     elif route in {"n8n", "n8n_fallback"}:
         outputs = [
@@ -113,7 +124,8 @@ def build_kakao_response(
                         KakaoButton(action="message", label="오늘 일정 다시 확인", messageText="오늘 일정 다시 요약해줘"),
                         KakaoButton(action="message", label="최근 메일 확인", messageText="최근 메일 요약해줘"),
                         KakaoButton(action="message", label="메일 초안 작성", messageText="test@example.com로 제목 안부, 내용 안녕하세요 메일 초안 작성해줘"),
-                        KakaoButton(action="message", label="메일 회신", messageText="제목 AI Assistant Gmail 발송 테스트 내용 확인했습니다 메일에 답장해줘"),
+                        KakaoButton(action="message", label="첨부 초안 작성", messageText="test@example.com로 제목 첨부 안내, 내용 첨부 확인 부탁드립니다 첨부 https://raw.githubusercontent.com/github/gitignore/main/README.md 메일 초안 작성해줘"),
+                        KakaoButton(action="message", label="첨부 회신", messageText="제목 AI Assistant Gmail 발송 테스트 내용 첨부 확인 부탁드립니다 첨부 https://raw.githubusercontent.com/github/gitignore/main/README.md 메일에 답장해줘"),
                     ],
                 )
             )

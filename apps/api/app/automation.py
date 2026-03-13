@@ -36,6 +36,7 @@ GMAIL_REPLY_KEYWORDS = ("답장", "회신", "reply")
 GMAIL_THREAD_KEYWORDS = ("이어", "이어서", "계속", "thread", "스레드")
 
 EMAIL_ADDRESS_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+URL_PATTERN = re.compile(r"https?://[^\s,]+", re.IGNORECASE)
 TIME_FRAGMENT_PATTERN = re.compile(
     r"(?:오전|오후)?\s*\d{1,2}(?:(?::\s*\d{2})|\s*시(?:\s*\d{1,2}\s*분?)?)\s*(?:반)?"
 )
@@ -69,6 +70,8 @@ GMAIL_COMPOSE_STOP_LABELS = (
     "스레드",
     "message",
     "메시지",
+    "첨부",
+    "attachment",
     "메일 보내줘",
     "메일 보내 줘",
     "이메일 보내줘",
@@ -376,6 +379,9 @@ def parse_gmail_compose_request(message: str, intent: str) -> dict[str, str] | N
         result["cc_list"] = cc_list
     if bcc_list:
         result["bcc_list"] = bcc_list
+    attachment_url = _extract_attachment_url(message)
+    if attachment_url:
+        result["attachment_url"] = attachment_url
     result["action"] = intent
     return result
 
@@ -421,6 +427,9 @@ def parse_gmail_reply_request(message: str, intent: str) -> dict[str, str] | Non
         result["cc_list"] = cc_list
     if bcc_list:
         result["bcc_list"] = bcc_list
+    attachment_url = _extract_attachment_url(message)
+    if attachment_url:
+        result["attachment_url"] = attachment_url
 
     search_query = _build_gmail_reply_search_query(subject, sender)
     if search_query:
@@ -581,6 +590,22 @@ def _build_gmail_reply_search_query(subject: str | None, sender: str | None) -> 
     if len(query_parts) == 1 and query_parts[0] == "newer_than:30d":
         return None
     return " ".join(query_parts)
+
+
+def _extract_attachment_url(message: str) -> str | None:
+    labeled_segment = _extract_labeled_segment(
+        message,
+        labels=("첨부", "attachment"),
+        stop_labels=("제목", "subject", "내용", "본문", *GMAIL_COMPOSE_STOP_LABELS),
+    )
+    candidate_sources = [labeled_segment, message]
+    for source in candidate_sources:
+        if not source:
+            continue
+        match = URL_PATTERN.search(source)
+        if match:
+            return match.group(0).rstrip(").,!?")
+    return None
 
 
 def _split_emails(value: str) -> list[str]:

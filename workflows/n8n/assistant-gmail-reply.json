@@ -19,7 +19,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const payload = $json.body ?? $json;\nif (!payload.message) {\n  return [{ json: { reply: '메일 회신 payload가 올바르지 않습니다.', action: 'gmail-reply-error' } }];\n}\nconst searchQuery = String(payload.search_query ?? '').trim();\nreturn [{ json: { reply_mode: String(payload.reply_mode ?? 'reply'), message: String(payload.message), email_type: String(payload.email_type ?? 'text'), thread_id: String(payload.thread_id ?? ''), message_id: String(payload.message_id ?? ''), subject: String(payload.subject ?? ''), sender: String(payload.sender ?? ''), search_query: searchQuery, cc_list: String(payload.cc_list ?? ''), bcc_list: String(payload.bcc_list ?? ''), direct_target: Boolean(payload.thread_id && payload.message_id), reply_to_sender_only: String(payload.reply_mode ?? 'reply') !== 'thread' } }];"
+        "jsCode": "const payload = $json.body ?? $json;\nif (!payload.message) {\n  return [{ json: { reply: '메일 회신 payload가 올바르지 않습니다.', action: 'gmail-reply-error' } }];\n}\nconst searchQuery = String(payload.search_query ?? '').trim();\nreturn [{ json: { reply_mode: String(payload.reply_mode ?? 'reply'), message: String(payload.message), email_type: String(payload.email_type ?? 'text'), thread_id: String(payload.thread_id ?? ''), message_id: String(payload.message_id ?? ''), subject: String(payload.subject ?? ''), sender: String(payload.sender ?? ''), search_query: searchQuery, cc_list: String(payload.cc_list ?? ''), bcc_list: String(payload.bcc_list ?? ''), attachment_url: String(payload.attachment_url ?? ''), direct_target: Boolean(payload.thread_id && payload.message_id), reply_to_sender_only: String(payload.reply_mode ?? 'reply') !== 'thread' } }];"
       },
       "id": "normalize-gmail-reply-node",
       "name": "Normalize Reply Request",
@@ -74,7 +74,7 @@
         "resource": "message",
         "operation": "getAll",
         "returnAll": false,
-        "limit": 5,
+        "limit": 10,
         "simple": false,
         "filters": {
           "q": "={{ $('Normalize Reply Request').first().json.search_query }}"
@@ -95,7 +95,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const request = $('Normalize Reply Request').first().json;\nconst messages = $input.all().map((item) => item.json).filter((mail) => mail && (mail.id || mail.threadId));\nif (!messages.length) {\n  return [{ json: { ...request, resolved_thread_id: '', resolved_message_id: '' } }];\n}\nconst target = messages[0];\nreturn [{ json: { ...request, resolved_thread_id: String(target.threadId || request.thread_id || ''), resolved_message_id: String(target.id || request.message_id || ''), matched_subject: String(target.subject || request.subject || ''), matched_sender: String(target.from?.text || request.sender || '') } }];"
+        "jsCode": "const request = $('Normalize Reply Request').first().json;\nconst normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim().toLowerCase();\nconst extractEmail = (value) => { const matched = String(value || '').match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}/); return matched ? matched[0].toLowerCase() : ''; };\nconst targetSubject = normalize(request.subject);\nconst targetSender = normalize(request.sender);\nconst targetSenderEmail = extractEmail(request.sender);\nconst messages = $input.all().map((item) => item.json).filter((mail) => mail && (mail.id || mail.threadId));\nif (!messages.length) {\n  return [{ json: { ...request, resolved_thread_id: '', resolved_message_id: '' } }];\n}\nconst scored = messages.map((mail) => {\n  const fromText = String(mail.from?.text || '');\n  const subject = String(mail.subject || '');\n  let score = 0;\n  if (targetSubject) {\n    const normalizedSubject = normalize(subject);\n    if (normalizedSubject === targetSubject) score += 100;\n    else if (normalizedSubject.includes(targetSubject) || targetSubject.includes(normalizedSubject)) score += 40;\n  }\n  if (targetSender) {\n    const normalizedSender = normalize(fromText);\n    const senderEmail = extractEmail(fromText);\n    if (targetSenderEmail && senderEmail === targetSenderEmail) score += 90;\n    else if (normalizedSender === targetSender) score += 70;\n    else if (normalizedSender.includes(targetSender) || targetSender.includes(normalizedSender)) score += 30;\n  }\n  if (mail.threadId) score += 5;\n  const internalDate = Number(mail.internalDate || 0);\n  return { mail, score, internalDate };\n}).sort((left, right) => right.score - left.score || right.internalDate - left.internalDate);\nconst target = scored[0].mail;\nreturn [{ json: { ...request, resolved_thread_id: String(target.threadId || request.thread_id || ''), resolved_message_id: String(target.id || request.message_id || ''), matched_subject: String(target.subject || request.subject || ''), matched_sender: String(target.from?.text || request.sender || ''), match_score: String(scored[0].score) } }];"
       },
       "id": "build-reply-target-node",
       "name": "Build Reply Target",
@@ -136,6 +136,67 @@
     },
     {
       "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "gmail-reply-attachment-check",
+              "leftValue": "={{ $json.attachment_url }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "gmail-reply-attachment-node",
+      "name": "Attachment URL Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1820, 220]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.attachment_url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "id": "download-reply-attachment-node",
+      "name": "Download Reply Attachment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2080, 140]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "build-reply-attachment-item-node",
+      "name": "Merge Reply Attachment Item",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [2340, 140]
+    },
+    {
+      "parameters": {
         "resource": "thread",
         "operation": "reply",
         "threadId": "={{ $json.resolved_thread_id }}",
@@ -152,7 +213,7 @@
       "name": "Reply To Gmail Thread",
       "type": "n8n-nodes-base.gmail",
       "typeVersion": 2.1,
-      "position": [1820, 220],
+      "position": [2340, 300],
       "credentials": {
         "gmailOAuth2": {
           "id": "uwgSMn8aAz0uOjq6",
@@ -162,13 +223,47 @@
     },
     {
       "parameters": {
-        "jsCode": "const request = $('Reply Target Exists?').first().json;\nconst replyModeLabel = request.reply_mode === 'thread' ? 'thread 이어쓰기' : '메일 회신';\nconst targetLabel = request.subject || request.matched_subject || request.sender || request.matched_sender || request.resolved_thread_id || request.resolved_message_id;\nreturn [{ json: { reply: `${replyModeLabel}을 실행했습니다. 대상은 '${targetLabel}' 입니다.`, action: 'gmail-reply', thread_id: String($json.threadId || request.resolved_thread_id || ''), message_id: String($json.id || request.resolved_message_id || '') } }];"
+        "resource": "thread",
+        "operation": "reply",
+        "threadId": "={{ $json.resolved_thread_id }}",
+        "messageId": "={{ $json.resolved_message_id }}",
+        "emailType": "={{ $json.email_type }}",
+        "message": "={{ $json.message }}",
+        "options": {
+          "ccList": "={{ $json.cc_list }}",
+          "bccList": "={{ $json.bcc_list }}",
+          "replyToSenderOnly": "={{ $json.reply_to_sender_only }}",
+          "attachmentsUi": {
+            "attachmentsBinary": [
+              {
+                "property": "data"
+              }
+            ]
+          }
+        }
+      },
+      "id": "reply-to-thread-with-attachment-node",
+      "name": "Reply To Gmail Thread With Attachment",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [2600, 140],
+      "alwaysOutputData": true,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "uwgSMn8aAz0uOjq6",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const request = $('Reply Target Exists?').first().json;\nconst replyModeLabel = request.reply_mode === 'thread' ? 'thread 이어쓰기' : '메일 회신';\nconst targetLabel = request.subject || request.matched_subject || request.sender || request.matched_sender || request.resolved_thread_id || request.resolved_message_id;\nconst attachmentText = request.attachment_url ? ' 첨부파일 URL도 포함했습니다.' : '';\nreturn [{ json: { reply: `${replyModeLabel}을 실행했습니다. 대상은 '${targetLabel}' 입니다.${attachmentText}`, action: 'gmail-reply', thread_id: String($json.threadId || request.resolved_thread_id || ''), message_id: String($json.id || request.resolved_message_id || '') } }];"
       },
       "id": "summarize-reply-node",
       "name": "Summarize Reply Result",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2080, 220]
+      "position": [2860, 220]
     },
     {
       "parameters": {
@@ -178,7 +273,7 @@
       "name": "Build Reply Not Found",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1820, 420]
+      "position": [2080, 480]
     },
     {
       "parameters": {
@@ -190,7 +285,7 @@
       "name": "Respond to Webhook",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.4,
-      "position": [2340, 320]
+      "position": [3120, 320]
     }
   ],
   "connections": {
@@ -207,16 +302,25 @@
     "Build Reply Target": { "main": [[{ "node": "Reply Target Exists?", "type": "main", "index": 0 }]] },
     "Reply Target Exists?": {
       "main": [
-        [{ "node": "Reply To Gmail Thread", "type": "main", "index": 0 }],
+        [{ "node": "Attachment URL Exists?", "type": "main", "index": 0 }, { "node": "Merge Reply Attachment Item", "type": "main", "index": 1 }],
         [{ "node": "Build Reply Not Found", "type": "main", "index": 0 }]
       ]
     },
+    "Attachment URL Exists?": {
+      "main": [
+        [{ "node": "Download Reply Attachment", "type": "main", "index": 0 }],
+        [{ "node": "Reply To Gmail Thread", "type": "main", "index": 0 }]
+      ]
+    },
+    "Download Reply Attachment": { "main": [[{ "node": "Merge Reply Attachment Item", "type": "main", "index": 0 }]] },
+    "Merge Reply Attachment Item": { "main": [[{ "node": "Reply To Gmail Thread With Attachment", "type": "main", "index": 0 }]] },
     "Reply To Gmail Thread": { "main": [[{ "node": "Summarize Reply Result", "type": "main", "index": 0 }]] },
+    "Reply To Gmail Thread With Attachment": { "main": [[{ "node": "Summarize Reply Result", "type": "main", "index": 0 }]] },
     "Summarize Reply Result": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] },
     "Build Reply Not Found": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] }
   },
   "settings": {},
   "pinData": {},
-  "versionId": "gmail-reply-live-001",
+  "versionId": "gmail-reply-live-002",
   "tags": []
 }
