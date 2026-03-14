@@ -10,6 +10,12 @@
 
 현재 외부 주 채널 우선순위는 KakaoTalk이며, 카카오 연동은 공식 채널과 OpenBuilder 또는 공식 webhook 경로만 사용한다.
 
+현재 외부 접근 토폴로지는 아래 기준으로 고정한다.
+
+- 외부 사용자와 Kakao webhook은 Cloudflare Tunnel을 통해 FastAPI 경로로만 들어온다.
+- 본인 브라우저, 노트북, SSH 접근은 Tailscale tailnet 경로로만 사용한다.
+- Open WebUI, n8n, SSH는 공개 인터넷에 직접 노출하지 않는다.
+
 핵심 설계 원칙은 다음과 같다.
 
 - 로컬 우선: 가능한 요청은 로컬 LLM에서 처리한다.
@@ -119,6 +125,7 @@ Kakao 채널을 추가한다.
 ## 핵심 설계 문서
 
 - [docs/architecture.md](docs/architecture.md)
+- [docs/remote-access.md](docs/remote-access.md)
 - [docs/google-calendar-integration.md](docs/google-calendar-integration.md)
 - [docs/gmail-integration.md](docs/gmail-integration.md)
 - [docs/slack-integration.md](docs/slack-integration.md)
@@ -138,6 +145,13 @@ Kakao 채널을 추가한다.
 
 - Slack 실제 워크스페이스 검증은 공개 도메인과 HTTPS 경로가 준비된 뒤 진행한다.
 
+## 현재 접근 경로
+
+- Kakao 공개 webhook URL은 Cloudflare Tunnel 뒤의 `https://<kakao-host>/assistant/api/kakao/webhook` 형태를 사용한다.
+- Open WebUI 운영 접근은 Tailscale 호스트명 기준 `http://<tailscale-host>/`를 사용한다.
+- n8n 운영 접근은 Tailscale 호스트명 기준 `http://<tailscale-host>:5678`를 사용한다.
+- SSH는 Tailscale 네트워크 위의 일반 SSH만 사용하고, macOS `Remote Login`을 켠 뒤 `ssh <mac-user>@<tailscale-host>` 형식으로 접속한다.
+
 ## 현재 남은 우선순위
 
 1. 공개 도메인 준비 후 Slack 실제 워크스페이스 연동과 토큰 기반 이벤트 검증
@@ -150,6 +164,10 @@ Kakao 채널을 추가한다.
 브라우저 자동화는 선택 프로필 서비스 `browser-runner`를 통해 분리한다. 현재는 `POST /assistant/api/browser/read`로 대상 URL의 제목, 설명, 주요 heading, 본문 일부를 read-only 방식으로 추출할 수 있다.
 
 macOS 자동화는 컨테이너가 아니라 호스트 프로세스로 분리한다. 현재는 `uv run --project apps/workers python -m worker.macos_runner`로 host runner를 띄운 뒤, 승인 기반으로 Notes 메모를 생성하는 흐름을 사용할 수 있다.
+
+Cloudflare Tunnel 적용은 `docker compose --env-file .env --profile edge up -d cloudflared` 기준으로 운영하고, Tailscale 적용 절차와 호스트 접근 규칙은 [docs/remote-access.md](docs/remote-access.md)에 정리한다.
+
+현재 확인된 Tailscale 호스트명은 `byoungyoung-macmini.tail53bcc7.ts.net` 이며, Open WebUI와 n8n은 이 호스트명으로 200 응답까지 확인했다. 다만 SSH는 `tailscale up --ssh` 대신 macOS 기본 `Remote Login`을 이용하는 방식으로 운영한다.
 
 ## OpenClaw 반영 확장 방향
 

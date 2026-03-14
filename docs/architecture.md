@@ -23,29 +23,32 @@
 
 ```mermaid
 flowchart TB
-    User[User]
-    Web[Web UI\nOpen WebUI]
-    Slack[Slack]
-    Kakao[KakaoTalk\nOfficial Channel and OpenBuilder]
+  User[User]
+  Kakao[KakaoTalk\nOfficial Channel and OpenBuilder]
+  Browser[Owner Browser / Laptop]
+  Cloudflare[Cloudflare Tunnel]
+  Tailscale[Tailscale Tailnet]
 
-    Proxy[Reverse Proxy\nCaddy or Nginx]
+  Proxy[Reverse Proxy\nCaddy]
     API[FastAPI Core API]
     Graph[LangGraph Router\nState and Approval Flow]
     N8N[n8n Automation]
+  Web[Web UI\nOpen WebUI]
     LocalRuntime[Local LLM Runtime\nOllama or LM Studio]
     ExtLLM[External LLM Providers]
     Redis[Redis]
     Postgres[PostgreSQL]
     MacTools[AppleScript / Playwright / Open Interpreter]
 
-    User --> Web
-    User --> Slack
-    User --> Kakao
+  Kakao --> Cloudflare
+  Cloudflare --> Proxy
+  Browser --> Tailscale
+  Tailscale --> Proxy
+  Tailscale --> N8N
+  Tailscale --> MacTools
 
-    Web --> Proxy
-    Slack --> API
-    Kakao --> API
     Proxy --> API
+  Proxy --> Web
 
     API --> Graph
     Graph --> LocalRuntime
@@ -58,6 +61,16 @@ flowchart TB
     N8N --> Postgres
     N8N --> Redis
 ```
+
+  ## 현재 외부 접근 토폴로지
+
+  현재는 외부 노출을 아래처럼 분리한다.
+
+  - 공개 ingress: Kakao 공식 채널 webhook만 Cloudflare Tunnel을 통해 수신한다.
+  - 운영자 접근: Open WebUI, n8n, SSH는 Tailscale tailnet 경로로만 접근한다.
+  - 맥미니 내부 서비스: FastAPI, n8n, Open WebUI, Ollama, Redis, PostgreSQL이 내부 실행 계층을 구성한다.
+
+  이 결정의 목적은 카카오 공개 webhook 경로만 좁게 노출하고, 운영자용 UI와 SSH는 공개 인터넷에서 분리하는 것이다.
 
 ## 설계 원칙
 
@@ -310,7 +323,7 @@ LangGraph에 과도한 영역:
 주의:
 
 - 비공식 개인 계정 자동화는 운영 리스크와 정책 리스크가 크므로 제외한다.
-- Slack보다 공개 HTTPS 구조 의존도가 높다.
+- 공개 HTTPS는 Cloudflare Tunnel 공개 호스트를 기준으로 연결한다.
 - 채널 기능과 챗봇 운영 기능을 구분해서 설계해야 한다.
 - 카카오 응답 시간 제약을 고려해, 장기 작업은 비동기 작업 ID와 후속 알림 구조로 분리한다.
 
@@ -991,7 +1004,8 @@ Mac mini
 - Docker Compose 중심 운영
 - 데이터 볼륨 분리
 - 로그 및 백업 경로 분리
-- 외부 노출은 reverse proxy 단일 진입점 사용
+- Kakao 공개 ingress는 Cloudflare Tunnel에서 reverse proxy로 연결
+- 운영자 UI, n8n, SSH는 Tailscale tailnet으로만 접근
 
 ## Docker 기반 운영 전략
 
@@ -1004,6 +1018,7 @@ Mac mini
 컨테이너 계층:
 
 - reverse proxy
+- cloudflared 선택 프로필
 - Open WebUI
 - FastAPI
 - LangGraph worker
@@ -1049,7 +1064,9 @@ macOS 자동화는 호스트 프로세스 `macos_runner`가 맡고, 현재는 `P
 - 컨테이너 내부 서비스는 내부 네트워크 이름으로 통신한다.
 - FastAPI와 worker는 PostgreSQL, Redis, n8n에 내부 네트워크로 접근한다.
 - Ollama 또는 LM Studio는 호스트에서 실행하고, 컨테이너는 호스트 주소를 통해 접근한다.
-- 외부에 직접 노출되는 것은 reverse proxy만 허용한다.
+- Kakao 공개 경로는 Cloudflare Tunnel에서 `proxy:80`으로 연결하고, 실제 공개 URL은 `/assistant/api/kakao/webhook`를 사용한다.
+- 운영자용 Open WebUI, n8n, SSH는 Tailscale tailnet 경로로만 접근한다.
+- 홈 라우터 포트포워딩으로 Open WebUI, n8n, SSH를 직접 공개하지 않는다.
 
 ### 4. 볼륨 분리 원칙
 
@@ -1093,6 +1110,14 @@ services:
     depends_on:
       - webui
       - api
+
+  cloudflared:
+    image: cloudflare/cloudflared:<PINNED_VERSION>
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    profiles:
+      - edge
+    depends_on:
+      - proxy
 
   webui:
     image: ghcr.io/open-webui/open-webui:<PINNED_VERSION>
@@ -1174,12 +1199,14 @@ volumes:
 
 ### Compose 초안 해설
 
-- `proxy`만 외부 포트를 직접 연다.
+- `proxy`는 로컬 reverse proxy 역할만 맡고, Kakao 공개 ingress는 Cloudflare Tunnel이 이 컨테이너로 연결한다.
+- `cloudflared`는 선택 프로필로 두고 Kakao 공개 hostname만 Cloudflare에서 연결한다.
 - `api`와 `worker`는 같은 환경변수를 공유하되 실행 책임을 분리한다.
 - `LOCAL_LLM_BASE_URL`은 Ollama 또는 LM Studio 중 선택된 호스트 런타임을 가리킨다.
 - `browser-runner`는 기본값이 아니라 선택 프로필로 두는 편이 안전하다.
 - PostgreSQL과 n8n 데이터는 반드시 볼륨으로 분리한다.
 - 외부 프록시 경로는 `Open WebUI=/`, `FastAPI=/assistant/api/*`처럼 분리해 Open WebUI의 자체 `/api`와 충돌하지 않게 한다.
+- Open WebUI, n8n, SSH 같은 운영자 경로는 Tailscale tailnet hostname으로만 접근한다.
 
 ### Docker 적용 시 주의사항
 

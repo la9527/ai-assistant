@@ -12,6 +12,20 @@ services:
       - api
       - webui
 
+  cloudflared:
+    image: cloudflare/cloudflared:2025.2.1
+    command:
+      - tunnel
+      - --no-autoupdate
+      - run
+      - --token
+      - ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      - proxy
+    profiles:
+      - edge
+    restart: unless-stopped
+
   webui:
     image: ghcr.io/open-webui/open-webui:v0.8.10
     environment:
