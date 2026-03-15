@@ -10,6 +10,11 @@
 - host MLX WebUI proxy: `com.aiassistant.mlx-webui-proxy`
 - Docker Compose core stack: `com.aiassistant.stack`
 
+24시간 무인 운영을 기준으로 보면 성격이 둘로 나뉜다.
+
+- MLX base server와 MLX WebUI proxy는 LaunchDaemon으로 전환 가능하다.
+- Docker Compose core stack은 현재 Docker Desktop을 사용하므로 로그인 세션 없는 완전한 LaunchDaemon 전환이 어렵다.
+
 Docker Compose core stack에는 기본적으로 아래 서비스가 포함된다.
 
 - `postgres`
@@ -29,6 +34,11 @@ Docker Compose core stack에는 기본적으로 아래 서비스가 포함된다
 - remote desktop 시작 스크립트: [infra/scripts/start-remote-desktop.sh](infra/scripts/start-remote-desktop.sh)
 - remote desktop 중지 스크립트: [infra/scripts/stop-remote-desktop.sh](infra/scripts/stop-remote-desktop.sh)
 - remote desktop 상태 스크립트: [infra/scripts/status-remote-desktop.sh](infra/scripts/status-remote-desktop.sh)
+- Tailscale Serve 시작 스크립트: [infra/scripts/start-tailscale-serve.sh](infra/scripts/start-tailscale-serve.sh)
+- Tailscale Serve 중지 스크립트: [infra/scripts/stop-tailscale-serve.sh](infra/scripts/stop-tailscale-serve.sh)
+- Tailscale Serve 상태 스크립트: [infra/scripts/status-tailscale-serve.sh](infra/scripts/status-tailscale-serve.sh)
+- LaunchDaemon 설치 스크립트: [infra/scripts/install-launchd-daemons.sh](infra/scripts/install-launchd-daemons.sh)
+- 24시간 운영 상태 스크립트: [infra/scripts/status-24x7-readiness.sh](infra/scripts/status-24x7-readiness.sh)
 - stack launchd plist: [infra/launchd/com.aiassistant.stack.plist](infra/launchd/com.aiassistant.stack.plist)
 - MLX 운영 문서: [docs/mlx-operations.md](docs/mlx-operations.md)
 
@@ -54,6 +64,29 @@ launchctl list | grep com.aiassistant.mlx-
 launchctl list | grep com.aiassistant.stack
 ```
 
+## LaunchDaemon 전환
+
+MLX 계열 서비스를 로그인 없이 부팅 시점부터 올리려면 아래 스크립트를 사용한다.
+
+```bash
+sudo infra/scripts/install-launchd-daemons.sh
+```
+
+이 스크립트는 아래 작업을 수행한다.
+
+- `com.aiassistant.mlx-base-server.daemon`
+- `com.aiassistant.mlx-webui-proxy.daemon`
+- 두 daemon plist를 `/Library/LaunchDaemons` 에 복사
+- 기존 사용자 LaunchAgent 기반 MLX job을 disable + bootout 처리해 자동 로그인 이후에도 중복 실행 방지
+- system domain에 bootstrap 후 즉시 kickstart
+
+중요한 제한:
+
+- 현재 `com.aiassistant.stack` 는 Docker Desktop에 의존하므로 LaunchDaemon으로 옮기지 않는다.
+- 완전 무인 부팅 후 Docker stack까지 자동 복구하려면 다음 중 하나가 필요하다.
+	- macOS 자동 로그인 유지
+	- Docker Desktop 대신 headless Docker Engine 계열 런타임 사용
+
 ## 재부팅 후 자동 시작 순서
 
 로그인 세션이 열리면 launchd가 아래 순서를 사실상 병렬에 가깝게 시작한다.
@@ -77,6 +110,12 @@ launchctl list | grep com.aiassistant.stack
 infra/scripts/install-launchd-services.sh
 ```
 
+### 1-1. MLX LaunchDaemon 경로 수동 재적용
+
+```bash
+sudo infra/scripts/install-launchd-daemons.sh
+```
+
 ### 2. Docker Compose core stack만 수동 시작
 
 ```bash
@@ -97,11 +136,26 @@ infra/scripts/start-remote-desktop.sh
 
 이 스크립트는 현재 셸에 남아 있는 `GUACAMOLE_*` 환경변수를 비운 뒤 `.env` 기준으로 `remote-desktop` 프로필만 올린다.
 
-### 4. MLX launchd만 수동 재시작
+### 4. Tailscale Serve HTTPS 시작
+
+```bash
+infra/scripts/start-tailscale-serve.sh
+```
+
+이 스크립트는 tailnet 내부에서 `https://<tailscale-host>/` 로 호스트 `80` 포트를 HTTPS 프록시한다.
+
+### 5. MLX launchd만 수동 재시작
 
 ```bash
 launchctl kickstart -k gui/$(id -u)/com.aiassistant.mlx-base-server
 launchctl kickstart -k gui/$(id -u)/com.aiassistant.mlx-webui-proxy
+```
+
+LaunchDaemon 경로를 쓰는 경우:
+
+```bash
+sudo launchctl kickstart -k system/com.aiassistant.mlx-base-server.daemon
+sudo launchctl kickstart -k system/com.aiassistant.mlx-webui-proxy.daemon
 ```
 
 ## 수동 중지 방법
@@ -124,7 +178,13 @@ infra/scripts/stop-assistant-stack.sh api worker
 infra/scripts/stop-remote-desktop.sh
 ```
 
-### 3. launchd job 해제
+### 3. Tailscale Serve HTTPS 중지
+
+```bash
+infra/scripts/stop-tailscale-serve.sh
+```
+
+### 4. launchd job 해제
 
 ```bash
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.aiassistant.stack.plist
@@ -139,6 +199,8 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.aiassistant.mlx-webui-
 ```bash
 infra/scripts/status-assistant-services.sh
 infra/scripts/status-remote-desktop.sh
+infra/scripts/status-tailscale-serve.sh
+infra/scripts/status-24x7-readiness.sh
 ```
 
 수동 확인:
@@ -169,6 +231,21 @@ tail -n 50 /tmp/aiassistant-stack.log
 ## 운영 메모
 
 - `com.aiassistant.stack` 는 로그인 세션 기준 LaunchAgent 이므로, macOS 부팅 직후 무인 상태가 아니라 사용자 로그인 이후에 실행된다.
+- 반대로 `com.aiassistant.mlx-base-server.daemon`, `com.aiassistant.mlx-webui-proxy.daemon` 는 로그인 없이도 부팅 시점부터 시작되도록 구성할 수 있다.
 - Docker Desktop 자체의 로그인 자동 실행을 켜 두면 compose stack 시작 시간이 더 짧아진다.
 - edge profile인 `cloudflared` 와 automation profile인 `browser-runner` 는 기본 자동 시작 대상에서 제외했다.
+- Tailscale Serve는 Docker Compose가 아니라 host Tailscale 설정이므로 별도 스크립트로 관리한다.
 - 필요 시 `AI_ASSISTANT_ENABLE_EDGE_PROFILE=true` 또는 `AI_ASSISTANT_ENABLE_AUTOMATION_PROFILE=true` 를 stack launchd plist 환경변수에 추가해 자동 시작 범위를 넓힐 수 있다.
+
+## 24시간 운영 체크리스트
+
+1. 전원 어댑터 연결 상태에서 `sleep=0`, `disksleep=0`, `autorestart=1` 기준으로 조정한다.
+2. 디스플레이만 끄고 본체 잠자기는 끄는 방식으로 운영한다.
+3. Docker Desktop 자동 실행을 켠다.
+4. MLX 계열은 `sudo infra/scripts/install-launchd-daemons.sh` 로 LaunchDaemon 전환을 적용한다.
+5. Tailscale 로그인 상태와 `infra/scripts/status-tailscale-serve.sh` 결과를 확인한다.
+6. `infra/scripts/start-tailscale-serve.sh` 로 tailnet HTTPS를 활성화한다.
+7. `infra/scripts/status-24x7-readiness.sh` 로 전원, Tailscale, MLX, Docker 상태를 한 번에 확인한다.
+8. 정전 복구를 대비해 가능하면 UPS를 사용한다.
+9. 재부팅 1회 테스트로 MLX daemon, Docker stack, Tailscale Serve 복구 순서를 실제 검증한다.
+10. 완전 무인 운영이 필요하면 Docker Desktop 의존을 줄이거나 macOS 자동 로그인을 유지한다.

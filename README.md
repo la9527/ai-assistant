@@ -13,7 +13,7 @@
 현재 외부 접근 토폴로지는 아래 기준으로 고정한다.
 
 - 외부 사용자와 Kakao webhook은 Cloudflare Tunnel을 통해 FastAPI 경로로만 들어온다.
-- 본인 브라우저, 노트북, SSH 접근은 Tailscale tailnet 경로로만 사용한다.
+- 본인 브라우저, 노트북, SSH 접근은 Tailscale tailnet 경로로만 사용하고, 웹 접근은 가능하면 Tailscale Serve 기반 `https://<tailscale-host>/` 를 사용한다.
 - 브라우저 기반 원격 데스크톱이 필요하면 선택 프로필 `remote-desktop` 으로 Guacamole을 Tailscale 내부 경로에만 추가한다.
 - Open WebUI, n8n, SSH는 공개 인터넷에 직접 노출하지 않는다.
 
@@ -25,6 +25,8 @@
 - 구조화 추출 우선: 자유 답변 전에 공통 JSON extraction 결과를 만들고, 검증 후 자동화 실행 여부를 결정한다.
 - 자동화 분리: 판단은 LangGraph, 외부 API 실행은 n8n으로 분리한다.
 - 승인 기반 실행: 시스템 조작, 메시지 발송, 브라우저 자동화는 승인 단계를 둔다.
+
+현재 24시간 운영 기준으로는 MLX 런타임은 LaunchDaemon 전환이 가능하지만, Docker Compose core stack은 Docker Desktop 의존 때문에 여전히 로그인 세션 기반 LaunchAgent 성격이 남아 있다. 자세한 운영 절차는 [docs/service-operations.md](docs/service-operations.md)에 정리한다.
 
 ## 상위 수준 기술 스택
 

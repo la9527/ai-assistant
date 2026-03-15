@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aiassistant.mlx-base-server.daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>/Users/byoungyoungla/AI_Project/AI_Assistant/infra/scripts/start-mlx-base-server.sh</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>UserName</key>
+    <string>byoungyoungla</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/byoungyoungla/AI_Project/AI_Assistant</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/byoungyoungla</string>
+        <key>PATH</key>
+        <string>/Users/byoungyoungla/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>MLX_BASE_MODEL_NAME</key>
+        <string>lmstudio-community/LFM2-24B-A2B-MLX-4bit</string>
+        <key>MLX_BASE_SERVER_HOST</key>
+        <string>0.0.0.0</string>
+        <key>MLX_BASE_SERVER_PORT</key>
+        <string>1235</string>
+        <key>MLX_BASE_SERVER_LOG_LEVEL</key>
+        <string>INFO</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/aiassistant-mlx-base-server-daemon.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/aiassistant-mlx-base-server-daemon.err.log</string>
+</dict>
+</plist>

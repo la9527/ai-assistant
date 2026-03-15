@@ -92,6 +92,8 @@ tail -n 50 /tmp/aiassistant-mlx-webui-proxy.err.log
 ```bash
 cp infra/launchd/com.aiassistant.mlx-base-server.plist ~/Library/LaunchAgents/
 cp infra/launchd/com.aiassistant.mlx-webui-proxy.plist ~/Library/LaunchAgents/
+launchctl enable gui/$(id -u)/com.aiassistant.mlx-base-server
+launchctl enable gui/$(id -u)/com.aiassistant.mlx-webui-proxy
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.aiassistant.mlx-base-server.plist >/dev/null 2>&1 || true
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.aiassistant.mlx-webui-proxy.plist >/dev/null 2>&1 || true
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.aiassistant.mlx-base-server.plist
@@ -99,6 +101,8 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.aiassistant.mlx-webu
 launchctl kickstart -k gui/$(id -u)/com.aiassistant.mlx-base-server
 launchctl kickstart -k gui/$(id -u)/com.aiassistant.mlx-webui-proxy
 ```
+
+LaunchDaemon 전환 스크립트를 이미 적용한 상태라면, 위 `launchctl enable` 두 줄이 없으면 user LaunchAgent가 다시 올라오지 않는다.
 
 2. API 설정 재반영
 
