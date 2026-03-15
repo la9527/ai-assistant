@@ -15,6 +15,7 @@ from fastapi import Request
 
 import httpx
 
+from app.automation import classify_message_intent
 from app.automation import process_message
 from app.config import settings
 from app.db import Base
@@ -60,35 +61,33 @@ REJECT_PATTERN = re.compile(r"^(거절|reject)\s+([a-zA-Z0-9-]+)$", re.IGNORECAS
 KAKAO_BASIC_CARD_DESCRIPTION_LIMIT = 230
 KAKAO_SIMPLE_TEXT_LIMIT = 1000
 
-DEFAULT_KAKAO_QUICK_REPLIES = [
-    KakaoQuickReply(label="일정 요약", action="message", messageText="오늘 일정 요약해줘"),
-    KakaoQuickReply(label="메일 요약", action="message", messageText="최근 메일 요약해줘"),
-    KakaoQuickReply(
-        label="일정 삭제",
-        action="message",
-        messageText="내일 오후 3시 회의 일정 삭제해줘",
-    ),
-    KakaoQuickReply(
-        label="메일 초안",
-        action="message",
-        messageText="test@example.com로 제목 안부, 내용 안녕하세요 메일 초안 작성해줘",
-    ),
-    KakaoQuickReply(
-        label="첨부 초안",
-        action="message",
-        messageText="test@example.com로 제목 첨부 안내, 내용 첨부 확인 부탁드립니다 첨부 https://raw.githubusercontent.com/github/gitignore/main/README.md 메일 초안 작성해줘",
-    ),
-    KakaoQuickReply(
-        label="메일 회신",
-        action="message",
-        messageText="제목 AI Assistant Gmail 발송 테스트 내용 확인했습니다 메일에 답장해줘",
-    ),
-    KakaoQuickReply(
-        label="첨부 회신",
-        action="message",
-        messageText="제목 AI Assistant Gmail 발송 테스트 내용 첨부 확인 부탁드립니다 첨부 https://raw.githubusercontent.com/github/gitignore/main/README.md 메일에 답장해줘",
-    ),
-]
+KAKAO_SUGGESTION_PRESETS: dict[str, list[tuple[str, str]]] = {
+    "general": [
+        ("일정 요약", "오늘 일정 요약해줘"),
+        ("메일 요약", "최근 메일 요약해줘"),
+        ("메모 작성", "메모에 제목 오늘 할 일 내용 일정과 메일 확인 저장해줘"),
+    ],
+    "calendar": [
+        ("오늘 일정", "오늘 일정 요약해줘"),
+        ("내일 일정", "내일 일정 요약해줘"),
+        ("일정 삭제", "내일 오후 3시 회의 일정 삭제해줘"),
+    ],
+    "gmail_summary": [
+        ("메일 요약", "최근 메일 요약해줘"),
+        ("메일 초안", "test@example.com로 제목 안부, 내용 안녕하세요 메일 초안 작성해줘"),
+        ("메일 회신", "제목 AI Assistant Gmail 발송 테스트 내용 확인했습니다 메일에 답장해줘"),
+    ],
+    "gmail_action": [
+        ("최근 메일", "최근 메일 요약해줘"),
+        ("메일 초안", "test@example.com로 제목 안부, 내용 안녕하세요 메일 초안 작성해줘"),
+        ("첨부 회신", "제목 AI Assistant Gmail 발송 테스트 내용 첨부 확인 부탁드립니다 첨부 https://raw.githubusercontent.com/github/gitignore/main/README.md 메일에 답장해줘"),
+    ],
+    "notes": [
+        ("메모 작성", "메모에 제목 오늘 할 일 내용 일정과 메일 확인 저장해줘"),
+        ("일정 요약", "오늘 일정 요약해줘"),
+        ("메일 요약", "최근 메일 요약해줘"),
+    ],
+}
 
 
 def _format_kakao_display_text(text: str) -> str:
@@ -109,11 +108,54 @@ def _truncate_kakao_text(text: str, limit: int) -> str:
     return formatted[: limit - 3].rstrip() + "..."
 
 
+def _kakao_suggestion_key(intent: str | None) -> str:
+    if not intent:
+        return "general"
+    if intent.startswith("calendar"):
+        return "calendar"
+    if intent == "gmail_summary":
+        return "gmail_summary"
+    if intent.startswith("gmail"):
+        return "gmail_action"
+    if intent.startswith("macos_note"):
+        return "notes"
+    return "general"
+
+
+def _build_kakao_suggestions(
+    source_message: str | None,
+    route: str,
+    approval_ticket_id: str | None,
+    action_type: str | None,
+) -> tuple[list[KakaoButton] | None, list[KakaoQuickReply] | None]:
+    intent = action_type or (classify_message_intent(source_message) if source_message else None)
+    suggestion_items = KAKAO_SUGGESTION_PRESETS[_kakao_suggestion_key(intent)]
+
+    if route == "approval_required" and approval_ticket_id:
+        approval_items = [
+            ("승인", f"승인 {approval_ticket_id}"),
+            ("거절", f"거절 {approval_ticket_id}"),
+        ]
+        suggestion_items = approval_items + suggestion_items[:1]
+
+    buttons = [
+        KakaoButton(action="message", label=label, messageText=message_text)
+        for label, message_text in suggestion_items[:3]
+    ]
+    quick_replies = [
+        KakaoQuickReply(label=label, action="message", messageText=message_text)
+        for label, message_text in suggestion_items[:3]
+    ]
+    return buttons or None, quick_replies or None
+
+
 def build_kakao_response(
     reply: str,
     session_id: str,
     route: str,
     approval_ticket_id: str | None = None,
+    source_message: str | None = None,
+    action_type: str | None = None,
 ) -> KakaoWebhookResponse:
     route_label = {
         "n8n": "자동화 응답",
@@ -125,6 +167,7 @@ def build_kakao_response(
     }.get(route, "응답")
     card_detail = _truncate_kakao_text(reply, KAKAO_BASIC_CARD_DESCRIPTION_LIMIT)
     simple_detail = _truncate_kakao_text(reply, KAKAO_SIMPLE_TEXT_LIMIT)
+    buttons, quick_replies = _build_kakao_suggestions(source_message, route, approval_ticket_id, action_type)
 
     if route == "approval_required" and approval_ticket_id:
         outputs = [
@@ -132,18 +175,9 @@ def build_kakao_response(
                 basicCard=KakaoBasicCard(
                     title=route_label,
                     description=card_detail,
-                    buttons=[
-                        KakaoButton(action="message", label="승인", messageText=f"승인 {approval_ticket_id}"),
-                        KakaoButton(action="message", label="거절", messageText=f"거절 {approval_ticket_id}"),
-                    ],
+                    buttons=buttons,
                 )
             )
-        ]
-        quick_replies = [
-            KakaoQuickReply(label="승인", action="message", messageText=f"승인 {approval_ticket_id}"),
-            KakaoQuickReply(label="거절", action="message", messageText=f"거절 {approval_ticket_id}"),
-            DEFAULT_KAKAO_QUICK_REPLIES[4],
-            DEFAULT_KAKAO_QUICK_REPLIES[6],
         ]
     elif route in {"n8n", "n8n_fallback"}:
         outputs = [
@@ -151,24 +185,16 @@ def build_kakao_response(
                 basicCard=KakaoBasicCard(
                     title=route_label,
                     description=card_detail,
-                    buttons=[
-                        KakaoButton(action="message", label="오늘 일정 다시 확인", messageText="오늘 일정 다시 요약해줘"),
-                        KakaoButton(action="message", label="최근 메일 확인", messageText="최근 메일 요약해줘"),
-                        KakaoButton(action="message", label="메일 초안 작성", messageText="test@example.com로 제목 안부, 내용 안녕하세요 메일 초안 작성해줘"),
-                        KakaoButton(action="message", label="첨부 초안 작성", messageText="test@example.com로 제목 첨부 안내, 내용 첨부 확인 부탁드립니다 첨부 https://raw.githubusercontent.com/github/gitignore/main/README.md 메일 초안 작성해줘"),
-                        KakaoButton(action="message", label="첨부 회신", messageText="제목 AI Assistant Gmail 발송 테스트 내용 첨부 확인 부탁드립니다 첨부 https://raw.githubusercontent.com/github/gitignore/main/README.md 메일에 답장해줘"),
-                    ],
+                    buttons=buttons,
                 )
             )
         ]
-        quick_replies = DEFAULT_KAKAO_QUICK_REPLIES
     else:
         outputs = [
             KakaoSimpleTextOutput(
                 simpleText=KakaoSimpleText(text=simple_detail)
             )
         ]
-        quick_replies = DEFAULT_KAKAO_QUICK_REPLIES
 
     return KakaoWebhookResponse(
         data={
@@ -209,7 +235,7 @@ def health(db: Session = Depends(get_db)) -> HealthResponse:
 def chat(payload: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
     approval_command = _match_approval_command(payload.message)
     if approval_command is not None:
-        session_id, reply, route, approval_ticket_id = _handle_approval_command(approval_command, None, db)
+        session_id, reply, route, approval_ticket_id, _ = _handle_approval_command(approval_command, None, db)
         return ChatResponse(
             reply=reply,
             route=route,
@@ -340,7 +366,7 @@ async def slack_events(
     approval_command = _match_approval_command(text)
     approval_ticket_id: str | None = None
     if approval_command is not None:
-        session_id, reply, route, approval_ticket_id = _handle_approval_command(approval_command, user_id, db)
+        session_id, reply, route, approval_ticket_id, _ = _handle_approval_command(approval_command, user_id, db)
     else:
         session = create_session(db, channel="slack", user_id=user_id, message=text)
         result = process_message(text, "slack", session.id, user_id)
@@ -383,8 +409,8 @@ def kakao_webhook(payload: KakaoWebhookUtterance, db: Session = Depends(get_db))
 
     approval_command = _match_approval_command(utterance)
     if approval_command is not None:
-        session_id, reply, route, approval_ticket_id = _handle_approval_command(approval_command, user_id, db)
-        return build_kakao_response(reply, session_id, route, approval_ticket_id)
+        session_id, reply, route, approval_ticket_id, action_type = _handle_approval_command(approval_command, user_id, db)
+        return build_kakao_response(reply, session_id, route, approval_ticket_id, utterance, action_type)
 
     session = create_session(
         db,
@@ -413,7 +439,7 @@ def kakao_webhook(payload: KakaoWebhookUtterance, db: Session = Depends(get_db))
     else:
         create_task_run(db, session_id=session.id, task_type=str(result["route"]), detail=utterance)
         reply = str(result["reply"])
-    return build_kakao_response(reply, session.id, str(result["route"]), approval_ticket_id)
+    return build_kakao_response(reply, session.id, str(result["route"]), approval_ticket_id, utterance, str(result["action_type"]) if result["action_type"] else None)
 
 
 @app.post("/api/actions/approve", response_model=ApprovalTicketResponse)
@@ -519,21 +545,21 @@ def _handle_approval_command(
     command: tuple[str, str],
     actor_id: str | None,
     db: Session,
-) -> tuple[str, str, str, str | None]:
+) -> tuple[str, str, str, str | None, str | None]:
     action, ticket_id = command
     ticket = get_approval_ticket(db, ticket_id)
     if ticket is None:
-        return "unknown", "승인 티켓을 찾지 못했습니다.", "not_found", None
+        return "unknown", "승인 티켓을 찾지 못했습니다.", "not_found", None, None
     if action == "reject":
         ticket = update_approval_ticket_status(db, ticket, status="rejected", actor_id=actor_id)
         pending_task = get_latest_task_run(db, ticket.session_id, task_type=ticket.action_type, status="pending_approval")
         if pending_task is not None:
             update_task_run_status(db, pending_task, status="rejected")
-        return ticket.session_id or "unknown", "승인 요청을 거절했습니다.", "rejected", ticket.id
+        return ticket.session_id or "unknown", "승인 요청을 거절했습니다.", "rejected", ticket.id, ticket.action_type
 
     ticket = update_approval_ticket_status(db, ticket, status="approved", actor_id=actor_id)
     execution_reply, route = _execute_pending_ticket(ticket, db)
-    return ticket.session_id or "unknown", execution_reply or "승인 처리했습니다.", route or "approved", ticket.id
+    return ticket.session_id or "unknown", execution_reply or "승인 처리했습니다.", route or "approved", ticket.id, ticket.action_type
 
 
 def _execute_pending_ticket(ticket: ApprovalTicket, db: Session) -> tuple[str | None, str | None]:
