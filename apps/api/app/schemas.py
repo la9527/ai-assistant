@@ -133,9 +133,15 @@ class KakaoButton(BaseModel):
     message_text: str | None = Field(default=None, alias="messageText")
 
 
+class KakaoThumbnail(BaseModel):
+    image_url: str = Field(alias="imageUrl")
+    alt_text: str | None = Field(default=None, alias="altText")
+
+
 class KakaoBasicCard(BaseModel):
     title: str
     description: str
+    thumbnail: KakaoThumbnail
     buttons: list[KakaoButton] | None = None
 
 

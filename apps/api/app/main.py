@@ -48,6 +48,7 @@ from app.schemas import KakaoQuickReply
 from app.schemas import KakaoSimpleText
 from app.schemas import KakaoSimpleTextOutput
 from app.schemas import KakaoTemplate
+from app.schemas import KakaoThumbnail
 from app.schemas import KakaoWebhookResponse
 from app.schemas import KakaoWebhookUtterance
 from app.schemas import SessionResponse
@@ -60,6 +61,8 @@ APPROVE_PATTERN = re.compile(r"^(승인|approve)\s+([a-zA-Z0-9-]+)$", re.IGNOREC
 REJECT_PATTERN = re.compile(r"^(거절|reject)\s+([a-zA-Z0-9-]+)$", re.IGNORECASE)
 KAKAO_BASIC_CARD_DESCRIPTION_LIMIT = 230
 KAKAO_SIMPLE_TEXT_LIMIT = 1000
+KAKAO_BASIC_CARD_THUMBNAIL_URL = "https://dummyimage.com/640x360/0f172a/ffffff.png&text=AI+Assistant"
+KAKAO_BASIC_CARD_THUMBNAIL_ALT = "AI Assistant"
 
 KAKAO_SUGGESTION_PRESETS: dict[str, list[tuple[str, str]]] = {
     "general": [
@@ -149,6 +152,13 @@ def _build_kakao_suggestions(
     return buttons or None, quick_replies or None
 
 
+def _build_kakao_thumbnail() -> KakaoThumbnail:
+    return KakaoThumbnail(
+        imageUrl=KAKAO_BASIC_CARD_THUMBNAIL_URL,
+        altText=KAKAO_BASIC_CARD_THUMBNAIL_ALT,
+    )
+
+
 def build_kakao_response(
     reply: str,
     session_id: str,
@@ -168,6 +178,7 @@ def build_kakao_response(
     card_detail = _truncate_kakao_text(reply, KAKAO_BASIC_CARD_DESCRIPTION_LIMIT)
     simple_detail = _truncate_kakao_text(reply, KAKAO_SIMPLE_TEXT_LIMIT)
     buttons, quick_replies = _build_kakao_suggestions(source_message, route, approval_ticket_id, action_type)
+    thumbnail = _build_kakao_thumbnail()
 
     if route == "approval_required" and approval_ticket_id:
         outputs = [
@@ -175,6 +186,7 @@ def build_kakao_response(
                 basicCard=KakaoBasicCard(
                     title=route_label,
                     description=card_detail,
+                    thumbnail=thumbnail,
                     buttons=buttons,
                 )
             )
@@ -185,6 +197,7 @@ def build_kakao_response(
                 basicCard=KakaoBasicCard(
                     title=route_label,
                     description=card_detail,
+                    thumbnail=thumbnail,
                     buttons=buttons,
                 )
             )
