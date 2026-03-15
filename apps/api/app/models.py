@@ -2,6 +2,7 @@ from datetime import datetime
 from uuid import uuid4
 
 from sqlalchemy import DateTime
+from sqlalchemy import JSON
 from sqlalchemy import String
 from sqlalchemy import Text
 from sqlalchemy.orm import Mapped
@@ -37,6 +38,37 @@ class ApprovalTicket(Base):
     action_type: Mapped[str] = mapped_column(String(64), default="generic_action")
     status: Mapped[str] = mapped_column(String(32), default="pending")
     actor_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class AssistantMessage(Base):
+    __tablename__ = "assistant_messages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_id)
+    session_id: Mapped[str] = mapped_column(String(36), index=True)
+    role: Mapped[str] = mapped_column(String(32), default="user")
+    channel: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    message_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    route: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    structured_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    message_meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=datetime.utcnow)
+
+
+class SessionState(Base):
+    __tablename__ = "session_states"
+
+    session_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    last_intent: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_route: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pending_action: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pending_ticket_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    last_extraction: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    last_candidates: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    state_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False), default=datetime.utcnow, onupdate=datetime.utcnow

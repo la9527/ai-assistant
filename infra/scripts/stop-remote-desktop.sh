@@ -1,0 +1,20 @@
+#!/usr/bin/env zsh
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+COMPOSE_FILE="$ROOT_DIR/infra/docker/docker-compose.yml"
+ENV_FILE="$ROOT_DIR/.env"
+
+unset GUACAMOLE_USERNAME
+unset GUACAMOLE_PASSWORD
+unset GUACAMOLE_CONNECTION_NAME
+unset GUACAMOLE_VNC_HOST
+unset GUACAMOLE_VNC_PORT
+unset GUACAMOLE_VNC_USERNAME
+unset GUACAMOLE_VNC_USE_LOGIN_PASSWORD
+unset GUACAMOLE_VNC_PASSWORD
+unset GUACD_LOG_LEVEL
+
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" --profile remote-desktop stop guacamole guacd
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" --profile remote-desktop ps

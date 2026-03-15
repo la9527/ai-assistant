@@ -8,6 +8,13 @@ class LocalLLMSettings(BaseModel):
     provider: str = Field(default="ollama")
     base_url: str = Field(default="http://localhost:11434/v1")
     model: str = Field(default="qwen3:8b")
+    timeout_seconds: float = Field(default=90.0)
+    prewarm_enabled: bool = Field(default=True)
+    structured_extraction_base_url: str = Field(default="http://localhost:11434/v1")
+    structured_extraction_model: str = Field(default="qwen3:8b")
+    structured_extraction_enabled: bool = Field(default=True)
+    structured_extraction_timeout_seconds: float = Field(default=25.0)
+    structured_extraction_targets: tuple[str, ...] = ("calendar_delete", "gmail_reply", "gmail_thread_reply")
 
 
 class Settings(BaseSettings):
@@ -41,11 +48,28 @@ class Settings(BaseSettings):
     local_llm_provider: str = Field(default="ollama", alias="LOCAL_LLM_PROVIDER")
     local_llm_base_url: str = Field(default="http://localhost:11434/v1", alias="LOCAL_LLM_BASE_URL")
     local_llm_model: str = Field(default="qwen3:8b", alias="LOCAL_LLM_MODEL")
+    local_llm_timeout_seconds: float = Field(default=90.0, alias="LOCAL_LLM_TIMEOUT_SECONDS")
+    local_llm_prewarm_enabled: bool = Field(default=True, alias="LOCAL_LLM_PREWARM_ENABLED")
+    local_llm_structured_extraction_enabled: bool = Field(default=True, alias="LOCAL_LLM_STRUCTURED_EXTRACTION_ENABLED")
+    local_llm_structured_extraction_base_url: str = Field(
+        default="",
+        alias="LOCAL_LLM_STRUCTURED_EXTRACTION_BASE_URL",
+    )
+    local_llm_structured_extraction_model: str = Field(default="", alias="LOCAL_LLM_STRUCTURED_EXTRACTION_MODEL")
+    local_llm_structured_extraction_timeout_seconds: float = Field(
+        default=25.0,
+        alias="LOCAL_LLM_STRUCTURED_EXTRACTION_TIMEOUT_SECONDS",
+    )
+    local_llm_structured_extraction_targets_raw: str = Field(
+        default="calendar_delete,gmail_reply,gmail_thread_reply",
+        alias="LOCAL_LLM_STRUCTURED_EXTRACTION_TARGETS",
+    )
     browser_runner_base_url: str = Field(default="http://browser-runner:8080", alias="BROWSER_RUNNER_BASE_URL")
     macos_automation_base_url: str = Field(default="http://host.docker.internal:8091", alias="MACOS_AUTOMATION_BASE_URL")
     slack_bot_token: str = Field(default="", alias="SLACK_BOT_TOKEN")
     slack_app_token: str = Field(default="", alias="SLACK_APP_TOKEN")
     slack_signing_secret: str = Field(default="", alias="SLACK_SIGNING_SECRET")
+    slack_auto_response_channels_raw: str = Field(default="ai비서", alias="SLACK_AUTO_RESPONSE_CHANNELS")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -55,7 +79,24 @@ class Settings(BaseSettings):
             provider=self.local_llm_provider,
             base_url=self.local_llm_base_url,
             model=self.local_llm_model,
+            timeout_seconds=self.local_llm_timeout_seconds,
+            prewarm_enabled=self.local_llm_prewarm_enabled,
+            structured_extraction_base_url=self.local_llm_structured_extraction_base_url or self.local_llm_base_url,
+            structured_extraction_model=self.local_llm_structured_extraction_model or self.local_llm_model,
+            structured_extraction_enabled=self.local_llm_structured_extraction_enabled,
+            structured_extraction_timeout_seconds=self.local_llm_structured_extraction_timeout_seconds,
+            structured_extraction_targets=tuple(
+                item.strip() for item in self.local_llm_structured_extraction_targets_raw.split(",") if item.strip()
+            ),
         )
+
+    @property
+    def slack_auto_response_channels(self) -> set[str]:
+        return {
+            item.strip().lstrip("#").lower()
+            for item in self.slack_auto_response_channels_raw.split(",")
+            if item.strip()
+        }
 
 
 settings = Settings()

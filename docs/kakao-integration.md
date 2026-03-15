@@ -120,12 +120,28 @@ https://ai-assistant-kakao.la9527.cloud/assistant/api/kakao/webhook
 
 - 요청 메서드는 `POST` 여야 한다.
 - 본문은 JSON 이어야 한다.
-- 응답 대기 시간 제한 때문에 장기 작업은 즉시 접수 메시지 후 비동기 후속 응답 구조로 유지하는 편이 안전하다.
+- 응답 대기 시간 제한 때문에 장기 작업은 즉시 접수 메시지 후 `callbackUrl` 기반 비동기 후속 응답 구조로 유지해야 안전하다.
 - 긴 텍스트만 반복하기보다 `simpleText`, `basicCard`, `quickReplies` 조합을 유지하는 편이 Kakao UX에 맞다.
 
 ## 현재 서버 응답 방식
 
-현재 FastAPI는 Kakao 요청을 받으면 아래 구조 중 하나로 응답한다.
+현재 FastAPI는 Kakao 요청을 받으면 아래 두 경로 중 하나로 응답한다.
+
+- Kakao 공식 요청에 `callbackUrl` 이 포함된 경우:
+  - 3초 이내에 `useCallback: true` 와 `data` 만 포함한 초기 ACK를 먼저 반환한다. 이 초기 응답에는 `template` 를 넣지 않는다.
+  - 실제 자동화 실행은 백그라운드에서 진행한다.
+  - 완료 후 같은 요청의 `callbackUrl` 로 최종 `simpleText` 또는 `basicCard` 를 다시 전송한다.
+- 내부 수동 테스트나 `callbackUrl` 이 없는 요청인 경우:
+  - 기존처럼 동기 응답을 바로 반환한다.
+
+## 2026-03-15 작업 메모
+
+- Kakao AI 챗봇 callback 가이드 기준으로 초기 ACK 응답은 `useCallback: true` 와 `data` 만 반환하도록 수정했다.
+- `userRequest.callbackUrl` 와 top-level `callbackUrl` 를 모두 해석하도록 서버를 보강했다.
+- callback 요청이 실제로 들어오면 초기 ACK 이후 백그라운드 작업을 수행하고, 완료 결과를 callback URL로 다시 POST하는 흐름까지 검증했다.
+- 다만 실제 운영 채널 최근 호출 로그에서는 `has_callback=False` 로 들어온 요청이 반복 확인됐다. 즉 서버 수정과 별개로 운영 채널 일부 요청은 callbackUrl 없이 스킬 서버를 호출하고 있다.
+- 운영 채널에서는 일부 요청이 서버까지 도달하지 않거나, 서버가 200으로 빠르게 응답했어도 Kakao 관리자센터에는 `스킬 서버 연결 오류 (1002)` 로 남는 사례가 있었다.
+- 따라서 현재 Kakao는 구현 자체를 유지하되 운영 채널 우선순위는 낮추고, 다음 외부 채널 검증은 Slack 중심으로 진행한다.
 
 - 일반 답변: `simpleText`
 - 승인 필요 작업: `basicCard` 와 `quickReplies`
@@ -153,9 +169,15 @@ https://ai-assistant-kakao.la9527.cloud/assistant/api/kakao/webhook
 
 성공 기준:
 
-- 채널에서 즉시 응답 메시지가 보인다.
-- 승인 필요 요청은 카드 또는 quick reply가 함께 보인다.
-- 승인 후에는 자동화 실행 결과가 다시 반환된다.
+- 채널에서 먼저 접수 메시지가 즉시 보인다.
+- 느린 자동화는 잠시 후 최종 결과가 callback 응답으로 다시 도착한다.
+- 승인 필요 요청은 카드 또는 quick reply가 포함된 최종 결과가 다시 전달된다.
+
+현재 상태:
+
+- 수동 callback payload 테스트는 성공했다.
+ callbackUrl 이 없는 동기 webhook 경로에서는 승인 필요 응답과 `승인 <ticket_id>` 후속 요청까지 다시 검증했고, session history/state 저장과 `route=n8n` 완료 응답을 확인했다.
+- 실제 운영 채널은 callback 미부여 호출과 `1002` 오류가 남아 있어 아직 성공 기준을 충족하지 못했다.
 
 ## 장애 점검 포인트
 
@@ -170,6 +192,8 @@ https://ai-assistant-kakao.la9527.cloud/assistant/api/kakao/webhook
 - 채널과 챗봇이 실제로 연결됐는지 확인한다.
 - 기본 진입 블록이 webhook/Skill 블록으로 연결됐는지 확인한다.
 - 채널 공개 상태와 관리자 권한을 확인한다.
+- callback 사용 블록이라면 실제 운영 채널 요청 payload에 `userRequest.callbackUrl` 이 포함되는지 API 로그에서 먼저 확인한다.
+- API 로그에 `has_callback=False` 가 반복되면 서버보다 OpenBuilder 블록 설정 또는 운영 채널 진입 경로를 먼저 의심한다.
 
 ### 응답은 오지만 자동화 결과가 이상할 때
 

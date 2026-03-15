@@ -1,5 +1,7 @@
 from datetime import datetime
+from typing import Any
 
+from pydantic import ConfigDict
 from pydantic import BaseModel
 from pydantic import Field
 
@@ -77,6 +79,7 @@ class KakaoWebhookUserRequest(BaseModel):
     utterance: str | None = None
     lang: str | None = None
     timezone: str | None = None
+    callback_url: str | None = Field(default=None, alias="callbackUrl")
     params: dict[str, str] | None = None
 
 
@@ -115,6 +118,13 @@ class KakaoWebhookUtterance(BaseModel):
             return self.user.id
         if self.user_request and self.user_request.user and self.user_request.user.id:
             return self.user_request.user.id
+        return None
+
+    def resolved_callback_url(self) -> str | None:
+        if self.callback_url:
+            return self.callback_url
+        if self.user_request and self.user_request.callback_url:
+            return self.user_request.callback_url
         return None
 
 
@@ -164,7 +174,70 @@ class KakaoWebhookResponse(BaseModel):
     version: str = "2.0"
     use_callback: bool = Field(default=False, alias="useCallback")
     data: dict[str, str] | None = None
-    template: KakaoTemplate
+    template: KakaoTemplate | None = None
+
+
+class ExtractionReference(BaseModel):
+    reference_type: str = Field(alias="referenceType")
+    reference_id: str | None = Field(default=None, alias="referenceId")
+    label: str | None = None
+    score: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class CalendarExtractionPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    title: str | None = None
+    search_title: str | None = Field(default=None, alias="searchTitle")
+    date: str | None = None
+    start_at: str | None = Field(default=None, alias="startAt")
+    end_at: str | None = Field(default=None, alias="endAt")
+    search_time_min: str | None = Field(default=None, alias="searchTimeMin")
+    search_time_max: str | None = Field(default=None, alias="searchTimeMax")
+    timezone: str | None = None
+
+
+class MailExtractionPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    reply_mode: str | None = Field(default=None, alias="replyMode")
+    recipients: list[str] = Field(default_factory=list)
+    cc: list[str] = Field(default_factory=list)
+    bcc: list[str] = Field(default_factory=list)
+    sender: str | None = None
+    subject: str | None = None
+    body: str | None = None
+    thread_reference: str | None = Field(default=None, alias="threadReference")
+    message_reference: str | None = Field(default=None, alias="messageReference")
+    search_query: str | None = Field(default=None, alias="searchQuery")
+    attachment_urls: list[str] = Field(default_factory=list, alias="attachmentUrls")
+
+
+class NoteExtractionPayload(BaseModel):
+    title: str | None = None
+    body: str | None = None
+    folder: str | None = None
+
+
+class StructuredExtraction(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    version: str = "1"
+    raw_message: str = Field(alias="rawMessage")
+    normalized_message: str = Field(alias="normalizedMessage")
+    channel: str | None = None
+    domain: str
+    action: str
+    intent: str
+    confidence: float = Field(default=0.6, ge=0.0, le=1.0)
+    needs_clarification: bool = Field(default=False, alias="needsClarification")
+    approval_required: bool = Field(default=False, alias="approvalRequired")
+    missing_fields: list[str] = Field(default_factory=list, alias="missingFields")
+    references: list[ExtractionReference] = Field(default_factory=list)
+    calendar: CalendarExtractionPayload | None = None
+    mail: MailExtractionPayload | None = None
+    note: NoteExtractionPayload | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class SessionResponse(BaseModel):
@@ -176,6 +249,31 @@ class SessionResponse(BaseModel):
     last_message: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class SessionMessageResponse(BaseModel):
+    message_id: str = Field(alias="messageId")
+    session_id: str = Field(alias="sessionId")
+    role: str
+    channel: str | None = None
+    message_text: str | None = Field(default=None, alias="messageText")
+    route: str | None = None
+    structured_data: dict[str, Any] | None = Field(default=None, alias="structuredData")
+    message_meta: dict[str, Any] | None = Field(default=None, alias="messageMeta")
+    created_at: datetime = Field(alias="createdAt")
+
+
+class SessionStateResponse(BaseModel):
+    session_id: str = Field(alias="sessionId")
+    last_intent: str | None = Field(default=None, alias="lastIntent")
+    last_route: str | None = Field(default=None, alias="lastRoute")
+    pending_action: str | None = Field(default=None, alias="pendingAction")
+    pending_ticket_id: str | None = Field(default=None, alias="pendingTicketId")
+    last_extraction: dict[str, Any] | None = Field(default=None, alias="lastExtraction")
+    last_candidates: list[Any] | None = Field(default=None, alias="lastCandidates")
+    state_data: dict[str, Any] | None = Field(default=None, alias="stateData")
+    created_at: datetime = Field(alias="createdAt")
+    updated_at: datetime = Field(alias="updatedAt")
 
 
 class TaskResponse(BaseModel):

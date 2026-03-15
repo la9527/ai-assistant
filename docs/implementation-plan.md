@@ -64,21 +64,120 @@
 - Gmail 회신 대상 선택은 제목, 발신자, 최근성 기준 scoring 로직으로 보강 완료
 - Kakao 자동화 응답은 메일 첨부 초안, 첨부 회신 예시 quick reply와 카드 버튼까지 반영 완료
 - Slack Events API 기준 `url_verification`, 서명 검증, DM 또는 app mention 메시지 처리, 승인 명령 처리, Bot token 기반 응답 전송 경로를 추가 완료
+- Slack은 Events API 요청에 즉시 ACK를 반환하고, 실제 작업은 백그라운드에서 처리한 뒤 같은 스레드로 접수 메시지와 최종 결과를 다시 보내는 구조로 전환했다.
+- Slack 승인 필요 응답은 Block Kit 버튼 기반 `승인`, `거절` 인터랙션으로 처리하도록 확장했다.
+ 로컬 ingress 기준 서명된 Slack DM 이벤트와 승인 버튼 인터랙션을 다시 검증했고, session messages/state에 승인 전후 상태와 최종 `route=n8n` 결과가 저장되는 것을 확인했다.
 - Slack 실환경 검증은 공개 도메인과 HTTPS 준비 이후로 보류 상태다.
 - `browser-runner`를 선택 프로필 서비스로 두고 `POST /assistant/api/browser/read` read-only 웹 추출 경로를 추가했다.
 - 호스트용 `macos_runner`를 추가하고 승인 후 Notes 메모를 생성하는 AppleScript 시나리오를 연결했다.
 - 외부 접근은 `Kakao=Cloudflare Tunnel`, `운영자 브라우저/n8n/SSH=Tailscale` 기준으로 정리하고, Compose에 선택 프로필 `cloudflared` 서비스를 추가했다.
+- 브라우저 기반 macOS 원격 접근이 필요할 때를 위해 Compose에 선택 프로필 `remote-desktop` 과 `Guacamole + guacd` 구성을 추가하고, Caddy `/guacamole/*` 경로로만 노출하도록 정리했다.
 - `cloudflared`는 `docker compose --env-file .env --profile edge up -d cloudflared` 기준으로 기동 검증했고, 공개 호스트에서 `GET /assistant/api/health`, `POST /assistant/api/kakao/webhook` 모두 실제 응답을 확인했다.
+- Kakao callback 가이드에 맞춰 초기 ACK에서 `template` 를 제거하고 `useCallback: true` 와 `data` 만 반환하도록 조정했다.
+- Kakao callback URL은 top-level과 `userRequest.callbackUrl` 양쪽 모두 지원하도록 보강했다.
+ Kakao 동기 webhook 승인 follow-up 경로에서 발생하던 500 오류는 승인 명령 사용자 메시지 기록 시 structured payload를 필수로 요구하던 부분을 수정해 해결했다.
+- 다만 실제 Kakao 운영 채널 로그에서는 `callbackUrl` 없이 들어오는 호출과 `1002` 오류가 남아 있어, 외부 채널 우선순위는 Slack 쪽으로 다시 이동했다.
 
 ## 현재 기준 남은 우선순위
 
 1. `docs/implementation-plan.md`, `README.md`, `docs/architecture.md` 기준의 문서 상태를 계속 동기화한다.
-2. Slack 공개 이벤트 주소를 Cloudflare Tunnel 호스트와 분리할지 같은 호스트에서 `/assistant/api/slack/events`로 함께 운영할지 결정하고 실제 Slack 앱 설정에 반영한다.
-3. Playwright 기반 브라우저 자동화 read-only 시나리오를 검증하고, 이후 승인 필요 시나리오로 확장할 정책과 결과 저장 형식을 정한다.
-4. AppleScript 기반 macOS 자동화는 Notes 외 추가 앱 시나리오와 권한/장애 복구 기준까지 확장한다.
-5. FastAPI 중심 라우팅에서 LangGraph 기반 상태 라우팅과 승인 후 재개 구조로 점진 전환한다.
-6. 채널 간 사용자 매핑, 공통 세션, 장기 메모리 저장 구조를 추가한다.
-7. 백업, 복구, 재기동 순서, 헬스체크, 로그 확인 절차를 운영 문서와 실제 검증 결과로 정리한다.
+2. 공통 extraction schema를 기준으로 calendar, mail, note 요청을 순차적으로 LLM JSON extraction 기반으로 전환한다.
+3. session history와 state 저장 구조를 활용해 참조형 요청, 후보 선택형 삭제, 승인 후 재개 흐름을 보강한다.
+4. Slack 앱 설정에 `/assistant/api/slack/events`, `/assistant/api/slack/interactions` 를 반영하고 실제 워크스페이스에서 검증한다.
+5. Slack 공개 채널, DM, 승인 버튼 흐름을 순서대로 실측하고 로그 기준 운영 점검 절차를 확정한다.
+6. Kakao 운영 채널의 callbackUrl 누락 원인과 OpenBuilder 블록 설정 차이를 재검토한다.
+7. Playwright 기반 브라우저 자동화 read-only 시나리오를 검증하고, 이후 승인 필요 시나리오로 확장할 정책과 결과 저장 형식을 정한다.
+8. AppleScript 기반 macOS 자동화는 Notes 외 추가 앱 시나리오와 권한/장애 복구 기준까지 확장한다.
+9. FastAPI 중심 라우팅에서 LangGraph 기반 상태 라우팅과 승인 후 재개 구조로 점진 전환한다.
+10. 채널 간 사용자 매핑, 공통 세션, 장기 메모리 저장 구조를 추가한다.
+11. 백업, 복구, 재기동 순서, 헬스체크, 로그 확인 절차를 운영 문서와 실제 검증 결과로 정리한다.
+
+## 구조화 추출 전환 계획
+
+1. 공통 envelope 정의
+
+- `domain`, `action`, `intent`, `confidence`, `needs_clarification`, `approval_required`, `missing_fields` 를 고정 필드로 둔다.
+- calendar, mail, note payload는 envelope 하위 schema로 분리한다.
+
+2. session history와 state 저장
+
+- 사용자 원문, assistant 응답, route, extraction 결과, 승인 메타데이터를 history에 저장한다.
+- 마지막 intent, 최근 extraction, pending action, pending ticket, candidate 목록은 state에 저장한다.
+
+3. rule-based baseline 유지
+
+- 현재 parser는 즉시 제거하지 않고 baseline extraction 생산용으로 유지한다.
+- LLM extraction이 실패하거나 schema 검증을 통과하지 못하면 baseline 또는 clarification으로 내려간다.
+
+4. 도메인별 전환 순서
+
+- 1차: `calendar_delete`, `gmail_reply`, `gmail_thread_reply`
+- 2차: `calendar_create`, `calendar_update`, `gmail_draft`, `gmail_send`
+- 3차: summary/list 계열 조회와 후보 선택형 후속 대화
+
+## 현재 1차 전환 상태
+
+- `calendar_delete`, `gmail_reply`, `gmail_thread_reply` 는 recent history와 baseline extraction을 함께 local LLM에 보내 JSON extraction을 먼저 시도한다.
+- 검증된 extraction JSON이 있으면 그 값을 우선 사용하고, 없으면 기존 parser로 안전하게 fallback 한다.
+- message history와 session state는 이후 후보 선택형 삭제와 참조형 후속 요청 해석의 입력으로 재사용한다.
+- 현재 기본 운영안은 일반 chat 과 structured extraction 모두 host MLX server의 `LFM2-24B-A2B-MLX-4bit` 단일 모델로 처리하는 구성이다.
+
+## MLX 단일 모델 권장안
+
+- 호스트 macOS에서 `mlx-lm` 으로 `lmstudio-community/LFM2-24B-A2B-MLX-4bit` 서버를 `1235` 에 기동한다.
+- Open WebUI 는 `1236` filtered proxy 를 통해 같은 모델만 노출한다.
+- FastAPI는 `LOCAL_LLM_BASE_URL` 과 `LOCAL_LLM_STRUCTURED_EXTRACTION_BASE_URL` 모두 같은 `1235` endpoint 를 사용한다.
+- 이 방식은 32GB unified memory 환경에서 dual-model 상시 운영보다 memory pressure 와 swap 증가를 줄이기 쉽다.
+
+## 현재 MLX structured extraction 검증 범위
+
+- `calendar_create`, `calendar_update`, `calendar_delete`
+- `gmail_draft`, `gmail_send`, `gmail_reply`, `gmail_thread_reply`
+- 각 요청은 `assistant_messages` 에 `schema_mode=llm_structured_extraction` 와 `merged_with_baseline=true` 메타데이터로 저장되는지 확인한다.
+
+## 승인 후 실제 실행 검증 결과
+
+- `내일 오후 3시에 MLX 검증 치과 일정 추가해줘` 요청은 승인 후 `route=n8n` 으로 실제 일정 생성 완료 응답을 확인했다.
+- `내일 오후 3시 MLX 검증 치과 일정 삭제해줘` 요청은 승인 후 `route=n8n` 으로 실제 일정 삭제 완료 응답을 확인했다.
+- `test@example.com로 제목 MLX 검증 메일 내용 오늘 작업 완료 메일 초안 작성해줘` 요청은 승인 후 `route=n8n` 으로 실제 Draft 생성 완료 응답을 확인했다.
+
+## MLX launchd 운영 확인 절차
+
+- 재부팅 후 자동 시작 설치와 수동 운영 스크립트는 `infra/scripts/install-launchd-services.sh`, `infra/scripts/start-assistant-stack.sh`, `infra/scripts/stop-assistant-stack.sh`, `infra/scripts/status-assistant-services.sh` 기준으로 추가했다.
+- stack 자동 시작 launchd label은 `com.aiassistant.stack` 이며, 자세한 절차는 `docs/service-operations.md` 에 정리한다.
+
+1. 서비스 등록 상태 확인
+
+- `launchctl list | grep com.aiassistant.mlx-base-server`
+- `launchctl list | grep com.aiassistant.mlx-webui-proxy`
+
+2. 모델 endpoint 확인
+
+- `curl -sS http://127.0.0.1:1235/v1/models`
+- `curl -sS http://127.0.0.1:1236/v1/models`
+
+3. 로그 확인
+
+- base server 표준 로그: `/tmp/aiassistant-mlx-base-server.log`
+- base server 오류 로그: `/tmp/aiassistant-mlx-base-server.err.log`
+- WebUI proxy 표준 로그: `/tmp/aiassistant-mlx-webui-proxy.log`
+- WebUI proxy 오류 로그: `/tmp/aiassistant-mlx-webui-proxy.err.log`
+
+4. 강제 재시작 검증
+
+- base server 재시작 후 `curl -sS http://127.0.0.1:1235/v1/models` 와 `curl -sS http://127.0.0.1:1236/v1/models` 가 다시 성공하는지 확인한다.
+- 현재 기본 운영안에서는 `1234` 구조화 추출 전용 서버를 비활성 상태로 둔다.
+
+## Slack 실환경 적용 순서
+
+1. Slack 앱 생성과 Scope 설정
+2. `.env` 에 `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` 반영
+3. `docker compose --env-file .env -f infra/docker/docker-compose.yml up -d --build api` 로 API 재빌드
+4. `Event Subscriptions` 에 `/assistant/api/slack/events` 등록
+5. `Interactivity & Shortcuts` 에 `/assistant/api/slack/interactions` 등록
+6. 워크스페이스 설치와 테스트 채널 초대
+7. 공개 채널 발화, DM 발화, 승인 필요 요청, 버튼 승인 순서로 검증
+8. `docker logs -f docker-api-1` 로 ACK와 후속 응답 로그 확인
 
 ## 5단계: 남은 기능 확장 순서
 
@@ -94,6 +193,7 @@
 - LM Studio 설치와 API 서버 활성화
 - Cloudflare Tunnel 생성과 token 발급
 - Tailscale 로그인과 tailnet 호스트 이름 확인
+- Guacamole을 사용할 경우 macOS `Screen Sharing` 과 `VNC viewers may control screen with password` 설정
 - Slack 앱 생성과 토큰 발급
 - macOS 자동화 권한 부여
 
@@ -101,3 +201,4 @@
 
 - Slack 실제 연결 절차는 `docs/slack-integration.md` 를 기준으로 진행한다.
 - 외부 접근과 Kakao 공개 경로 적용 절차는 `docs/remote-access.md` 를 기준으로 진행한다.
+- MLX 구조화 추출 서버 운영 절차는 `docs/mlx-operations.md` 를 기준으로 진행한다.

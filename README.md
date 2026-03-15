@@ -8,12 +8,13 @@
 - Slack
 - KakaoTalk
 
-현재 외부 주 채널 우선순위는 KakaoTalk이며, 카카오 연동은 공식 채널과 OpenBuilder 또는 공식 webhook 경로만 사용한다.
+현재 외부 채널 우선순위는 Slack이며, KakaoTalk 연동은 공식 채널과 OpenBuilder 또는 공식 webhook 경로만 유지하되 운영 채널 안정화 전까지 보류 상태로 둔다.
 
 현재 외부 접근 토폴로지는 아래 기준으로 고정한다.
 
 - 외부 사용자와 Kakao webhook은 Cloudflare Tunnel을 통해 FastAPI 경로로만 들어온다.
 - 본인 브라우저, 노트북, SSH 접근은 Tailscale tailnet 경로로만 사용한다.
+- 브라우저 기반 원격 데스크톱이 필요하면 선택 프로필 `remote-desktop` 으로 Guacamole을 Tailscale 내부 경로에만 추가한다.
 - Open WebUI, n8n, SSH는 공개 인터넷에 직접 노출하지 않는다.
 
 핵심 설계 원칙은 다음과 같다.
@@ -21,6 +22,7 @@
 - 로컬 우선: 가능한 요청은 로컬 LLM에서 처리한다.
 - 하이브리드 라우팅: 복잡한 작업만 외부 LLM으로 보낸다.
 - 채널 분리: 웹, Slack, Kakao는 어댑터로 다루고 핵심 로직은 공통 계층에 둔다.
+- 구조화 추출 우선: 자유 답변 전에 공통 JSON extraction 결과를 만들고, 검증 후 자동화 실행 여부를 결정한다.
 - 자동화 분리: 판단은 LangGraph, 외부 API 실행은 n8n으로 분리한다.
 - 승인 기반 실행: 시스템 조작, 메시지 발송, 브라우저 자동화는 승인 단계를 둔다.
 
@@ -129,6 +131,8 @@ Kakao 채널을 추가한다.
 - [docs/remote-access.md](docs/remote-access.md)
 - [docs/google-calendar-integration.md](docs/google-calendar-integration.md)
 - [docs/gmail-integration.md](docs/gmail-integration.md)
+- [docs/mlx-operations.md](docs/mlx-operations.md)
+- [docs/service-operations.md](docs/service-operations.md)
 - [docs/slack-integration.md](docs/slack-integration.md)
 
 ## 현재 검증된 자동화 범위
@@ -142,27 +146,43 @@ Kakao 채널을 추가한다.
 - Kakao 자동화 카드와 quick reply 기준의 메일 첨부 예시 UX 검증
 - Cloudflare Tunnel 공개 호스트 `https://ai-assistant-kakao.la9527.cloud` 기준 `GET /assistant/api/health` 검증
 - Cloudflare Tunnel 공개 호스트 기준 `POST /assistant/api/kakao/webhook` 실응답 검증
-- Slack Events API 기준 `url_verification`, app mention, DM, 승인 필요 응답 경로 로컬 payload 검증
+- Slack Events API 기준 `url_verification`, app mention, DM, 3초 이내 ACK 후 백그라운드 후속 응답, 승인 버튼 인터랙션 경로 검증
+
+## 현재 추가된 구조화 기반 준비 작업
+
+- 공통 extraction envelope와 calendar, mail, note 도메인 payload schema를 추가했다.
+- session별 message history 저장 테이블과 state 저장 테이블을 추가했다.
+- `POST /assistant/api/chat`, Slack, Kakao 처리 시 사용자 원문, assistant 응답, 승인 관련 상태를 함께 적재한다.
+- `GET /assistant/api/sessions/{session_id}/messages`, `GET /assistant/api/sessions/{session_id}/state` 로 최근 문맥과 상태를 조회할 수 있다.
+- `calendar_delete`, `gmail_reply`, `gmail_thread_reply` 는 recent history와 baseline extraction을 함께 local LLM에 보내 JSON extraction을 먼저 시도하고, 실패 시 기존 parser로 fallback 한다.
+- 현재 기본 운영안은 host MLX server의 `lmstudio-community/LFM2-24B-A2B-MLX-4bit` 단일 모델로 일반 답변과 구조화 추출을 함께 처리하는 방식이다.
+- 현재 MLX structured extraction 대상은 `calendar_create`, `calendar_update`, `calendar_delete`, `gmail_draft`, `gmail_send`, `gmail_reply`, `gmail_thread_reply` 이다.
+- 현재 운영 launchd 는 `com.aiassistant.mlx-base-server`, `com.aiassistant.mlx-webui-proxy`, `com.aiassistant.stack` 를 사용하며, 설치와 수동 운영 절차는 [docs/service-operations.md](docs/service-operations.md) 와 [docs/mlx-operations.md](docs/mlx-operations.md) 에 정리했다.
+- Guacamole remote desktop 는 `infra/scripts/start-remote-desktop.sh`, `infra/scripts/stop-remote-desktop.sh`, `infra/scripts/status-remote-desktop.sh` 기준으로 운영한다. 이 스크립트들은 현재 셸에 export 된 `GUACAMOLE_*` 값이 `.env` 설정을 덮어쓰지 않도록 먼저 정리한다.
+- 승인 후 실제 실행 검증 기준으로는 MLX extraction 기반 `calendar_create`, `calendar_delete`, `gmail_draft` 요청이 모두 `route=n8n` 완료 응답까지 확인됐다.
 
 ## 현재 보류 사항
 
-- Slack 실제 워크스페이스 검증은 공개 도메인과 HTTPS 경로가 준비된 뒤 진행한다.
+- Kakao 운영 채널은 callback 가이드 기준 초기 ACK 형식까지 반영했지만, 실제 운영 호출에서 `callbackUrl` 이 누락되는 경우와 `1002` 오류가 반복되어 우선 보류한다.
+- Slack 실제 워크스페이스 검증과 운영 채널 전환을 다음 우선순위로 진행한다.
 
 ## 현재 접근 경로
 
 - Kakao 공개 webhook URL은 Cloudflare Tunnel 뒤의 `https://<kakao-host>/assistant/api/kakao/webhook` 형태를 사용한다.
 - Open WebUI 운영 접근은 Tailscale 호스트명 기준 `http://<tailscale-host>/`를 사용한다.
 - n8n 운영 접근은 Tailscale 호스트명 기준 `http://<tailscale-host>:5678`를 사용한다.
+- Guacamole 운영 접근은 선택 프로필 활성화 후 Tailscale 호스트명 기준 `http://<tailscale-host>/guacamole/`를 사용한다.
 - SSH는 Tailscale 네트워크 위의 일반 SSH만 사용하고, macOS `Remote Login`을 켠 뒤 `ssh <mac-user>@<tailscale-host>` 형식으로 접속한다.
 
 ## 현재 남은 우선순위
 
-1. 공개 도메인 준비 후 Slack 실제 워크스페이스 연동과 토큰 기반 이벤트 검증
-2. Playwright 기반 브라우저 자동화 read-only 경로를 실사용 기준으로 다듬고 승인 필요 시나리오로 확장
-3. AppleScript 기반 macOS 자동화 승인 시나리오를 실사용 기준으로 다듬고 추가 앱으로 확장
-4. LangGraph 상태 라우팅과 승인 후 재개 구조 도입
-5. 채널 통합 사용자 매핑과 장기 메모리 계층 추가
-6. 백업, 복구, 재기동 절차의 실제 검증과 문서화
+1. Slack 실제 워크스페이스 연동과 토큰 기반 이벤트 검증
+2. Kakao 운영 채널의 callbackUrl 누락 여부와 OpenBuilder 블록 설정 차이를 다시 점검
+3. Playwright 기반 브라우저 자동화 read-only 경로를 실사용 기준으로 다듬고 승인 필요 시나리오로 확장
+4. AppleScript 기반 macOS 자동화 승인 시나리오를 실사용 기준으로 다듬고 추가 앱으로 확장
+5. LangGraph 상태 라우팅과 승인 후 재개 구조 도입
+6. 채널 통합 사용자 매핑과 장기 메모리 계층 추가
+7. 백업, 복구, 재기동 절차의 실제 검증과 문서화
 
 브라우저 자동화는 선택 프로필 서비스 `browser-runner`를 통해 분리한다. 현재는 `POST /assistant/api/browser/read`로 대상 URL의 제목, 설명, 주요 heading, 본문 일부를 read-only 방식으로 추출할 수 있다.
 

@@ -1,9 +1,18 @@
 :80 {
   encode gzip
 
+  log {
+    output stdout
+    format console
+  }
+
   handle /assistant/* {
     uri strip_prefix /assistant
     reverse_proxy api:8000
+  }
+
+  handle /guacamole* {
+    reverse_proxy guacamole:8080
   }
 
   handle {

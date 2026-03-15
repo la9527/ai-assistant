@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aiassistant.mlx-webui-proxy</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>python3</string>
+        <string>/Users/byoungyoungla/AI_Project/AI_Assistant/infra/scripts/start-mlx-webui-proxy.sh</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/byoungyoungla/AI_Project/AI_Assistant</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>MLX_WEBUI_PROXY_UPSTREAM</key>
+        <string>http://127.0.0.1:1235</string>
+        <key>MLX_WEBUI_PROXY_HOST</key>
+        <string>0.0.0.0</string>
+        <key>MLX_WEBUI_PROXY_PORT</key>
+        <string>1236</string>
+        <key>MLX_WEBUI_PROXY_MODEL</key>
+        <string>lmstudio-community/LFM2-24B-A2B-MLX-4bit</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/aiassistant-mlx-webui-proxy.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/aiassistant-mlx-webui-proxy.err.log</string>
+</dict>
+</plist>

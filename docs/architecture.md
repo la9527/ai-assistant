@@ -34,7 +34,7 @@ flowchart TB
     Graph[LangGraph Router\nState and Approval Flow]
     N8N[n8n Automation]
   Web[Web UI\nOpen WebUI]
-    LocalRuntime[Local LLM Runtime\nOllama or LM Studio]
+    LocalRuntime[Local LLM Runtime\nOllama or LM Studio or MLX]
     ExtLLM[External LLM Providers]
     Redis[Redis]
     Postgres[PostgreSQL]
@@ -67,7 +67,7 @@ flowchart TB
   현재는 외부 노출을 아래처럼 분리한다.
 
   - 공개 ingress: Kakao 공식 채널 webhook만 Cloudflare Tunnel을 통해 수신한다.
-  - 운영자 접근: Open WebUI, n8n, SSH는 Tailscale tailnet 경로로만 접근한다.
+  - 운영자 접근: Open WebUI, n8n, SSH, 선택적 Guacamole 브라우저 원격 데스크톱은 Tailscale tailnet 경로로만 접근한다.
   - 맥미니 내부 서비스: FastAPI, n8n, Open WebUI, Ollama, Redis, PostgreSQL이 내부 실행 계층을 구성한다.
 
   이 결정의 목적은 카카오 공개 webhook 경로만 좁게 노출하고, 운영자용 UI와 SSH는 공개 인터넷에서 분리하는 것이다.
@@ -82,6 +82,14 @@ flowchart TB
 
 - LangGraph: 상태 기반 라우팅, 승인 흐름, 분기 판단
 - n8n: 외부 서비스 실행, 스케줄링, 웹훅 기반 자동화
+
+### 2-1. 자유 답변 전에 구조화 추출을 먼저 만든다
+
+- 사용자 발화는 먼저 공통 extraction JSON으로 정규화한다.
+- extraction JSON은 `domain`, `action`, `intent`, `confidence`, `needs_clarification`, `approval_required`, `missing_fields` 와 도메인별 payload를 포함한다.
+- calendar, mail, note 같은 도메인별 payload는 공통 envelope 아래에 분리한다.
+- 자동화 실행은 자유 텍스트가 아니라 검증된 extraction JSON을 기준으로 수행한다.
+- 현재는 rule-based baseline extraction을 먼저 저장하고, 이후 동일 schema에 LLM JSON extraction을 연결한다.
 
 ### 3. 로컬 우선, 필요할 때만 외부 모델 사용
 
@@ -106,6 +114,11 @@ flowchart TB
 ### 5. 채널 간 세션 연속성 보장
 
 웹, Slack, Kakao 중 어느 채널에서 들어와도 동일 사용자라면 같은 작업 이력, 메모리, 승인 상태를 이어받을 수 있어야 한다.
+
+이를 위해 세션 계층은 아래 두 저장소를 기본으로 둔다.
+
+- message history: 사용자 원문, assistant 응답, route, 구조화 extraction 결과, 승인 관련 메타데이터 저장
+- session state: 마지막 intent, 마지막 route, pending action, pending ticket, 최근 extraction, 후보 목록, 보조 상태 저장
 
 ### 6. 하드코딩보다 스킬 중심 확장
 
@@ -155,6 +168,8 @@ flowchart TB
 - `POST /api/actions/approve`
 - `POST /api/actions/reject`
 - `GET /api/sessions/{session_id}`
+- `GET /api/sessions/{session_id}/messages`
+- `GET /api/sessions/{session_id}/state`
 - `GET /api/tasks/{task_id}`
 - `GET /api/health`
 
@@ -180,6 +195,7 @@ flowchart TB
 
 ```text
 ingest
+  -> extract_structured_request
   -> classify_request
   -> load_context
   -> decide_route
@@ -198,6 +214,8 @@ LangGraph에 적합한 영역:
 - 사용자 메모리 적용
 - 승인 후 상태 재개
 - 브라우저 및 시스템 도구 호출 전 정책 판정
+- extraction JSON 검증 실패 시 clarification 분기
+- history와 last_candidates를 활용한 참조 해석
 
 LangGraph에 과도한 영역:
 
@@ -245,7 +263,7 @@ LangGraph에 과도한 영역:
 
 권장 구조:
 
-- 로컬 추론 런타임은 `Ollama` 또는 `LM Studio` 중 하나를 선택 가능하게 둔다.
+- 로컬 추론 런타임은 `Ollama`, `LM Studio`, `MLX` 중 용도에 맞게 선택 가능하게 둔다.
 - FastAPI 또는 공통 LLM 클라이언트 계층에서 런타임 차이를 흡수한다.
 - 가능하면 OpenAI 호환 API 형식으로 호출을 표준화한다.
 - 비즈니스 로직과 런타임 구현을 직접 결합하지 않는다.
@@ -260,6 +278,7 @@ LangGraph에 과도한 영역:
 
 - `Ollama`: 상시 운영, 단순한 배포, 자동 시작, 안정적인 서버형 사용에 유리
 - `LM Studio`: 특정 GGUF 모델 테스트, 세밀한 로컬 실험, 모델별 체감 성능 비교에 유리
+- `MLX`: Apple Silicon에서 MLX 계열 모델을 직접 서빙하기 좋고, 구조화 추출이나 코딩형 inference 분리에 유리
 
 운영 권장안:
 
@@ -978,7 +997,7 @@ Web에서 조사 작업 시작
 
 - 백업 주기와 보관 기간
 - 외장 SSD 또는 원격 백업 사용 여부
-- 맥 재부팅 후 자동 시작 정책
+- 맥 재부팅 후 자동 시작 정책의 profile 범위
 - 외부 LLM fallback 허용 범위
 - 장애 시 read-only 모드 지원 여부
 - 로그와 브라우저 산출물의 삭제 주기
@@ -1202,7 +1221,8 @@ volumes:
 - `proxy`는 로컬 reverse proxy 역할만 맡고, Kakao 공개 ingress는 Cloudflare Tunnel이 이 컨테이너로 연결한다.
 - `cloudflared`는 선택 프로필로 두고 Kakao 공개 hostname만 Cloudflare에서 연결한다.
 - `api`와 `worker`는 같은 환경변수를 공유하되 실행 책임을 분리한다.
-- `LOCAL_LLM_BASE_URL`은 Ollama 또는 LM Studio 중 선택된 호스트 런타임을 가리킨다.
+- `LOCAL_LLM_BASE_URL`은 일반 응답용 호스트 런타임을 가리킨다.
+- `LOCAL_LLM_STRUCTURED_EXTRACTION_BASE_URL`은 구조화 추출 전용 런타임을 별도로 가리킬 수 있다.
 - `browser-runner`는 기본값이 아니라 선택 프로필로 두는 편이 안전하다.
 - PostgreSQL과 n8n 데이터는 반드시 볼륨으로 분리한다.
 - 외부 프록시 경로는 `Open WebUI=/`, `FastAPI=/assistant/api/*`처럼 분리해 Open WebUI의 자체 `/api`와 충돌하지 않게 한다.
@@ -1212,6 +1232,7 @@ volumes:
 
 - `host.docker.internal` 접근 가능 여부를 macOS 환경에서 실제 검증해야 한다.
 - LM Studio를 사용할 경우 OpenAI 호환 API 포트와 자동 시작 정책을 확인해야 한다.
+- MLX를 사용할 경우 `mlx_lm.server --model <repo> --port <port>` 형태로 호스트에서 OpenAI 호환 HTTP 서버를 띄우고, FastAPI는 `host.docker.internal` 경유로 접근한다.
 - AppleScript 실행기는 컨테이너 안이 아니라 호스트 프로세스로 두는 편이 낫다.
 - Playwright는 브라우저 자원 사용량이 커서 API와 같은 컨테이너에 넣지 않는 편이 안전하다.
 - 로그 디렉터리를 컨테이너 데이터와 분리해 디스크 폭주를 막아야 한다.
@@ -1268,6 +1289,14 @@ docs/
 9. 스킬 등록 방식과 배포 단위 정의
 10. 백업 및 복구 정책 정의
 11. 맥 재부팅 후 자동 시작 순서 정의
+
+현재 기본 운영안에서는 아래 순서를 채택한다.
+
+- launchd `com.aiassistant.mlx-base-server`
+- launchd `com.aiassistant.mlx-webui-proxy`
+- launchd `com.aiassistant.stack`
+
+`com.aiassistant.stack` 는 Docker Desktop 준비를 기다린 뒤 Compose core stack을 재기동한다.
 
 ## MVP 범위 권장안
 

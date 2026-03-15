@@ -5,7 +5,12 @@ from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from app.config import settings
+from app.llm import generate_structured_extraction
 from app.llm import generate_local_reply
+from app.schemas import CalendarExtractionPayload
+from app.schemas import MailExtractionPayload
+from app.schemas import NoteExtractionPayload
+from app.schemas import StructuredExtraction
 
 
 CALENDAR_AUTOMATION_KEYWORDS = (
@@ -28,6 +33,9 @@ GMAIL_AUTOMATION_KEYWORDS = (
 CALENDAR_CREATE_KEYWORDS = ("추가", "생성", "등록", "만들", "잡아")
 CALENDAR_UPDATE_KEYWORDS = ("변경", "수정", "옮겨", "미뤄", "당겨", "재조정")
 CALENDAR_DELETE_KEYWORDS = ("삭제", "취소", "지워", "제거", "없애")
+CALENDAR_REFERENCE_PATTERN = re.compile(
+    r"(오늘|내일|모레|20\d{2}[-./]\d{1,2}[-./]\d{1,2}|\d{1,2}\s*월\s*\d{1,2}\s*일|(?<!\d)\d{1,2}[./-]\d{1,2}(?!\d))"
+)
 
 GMAIL_DRAFT_KEYWORDS = ("초안", "draft")
 GMAIL_SEND_KEYWORDS = ("발송", "send")
@@ -102,21 +110,364 @@ MACOS_NOTE_ACTION_STOP_LABELS = (
     "해주세요",
 )
 
+CALENDAR_TITLE_STOP_TOKENS = {
+    "에",
+    "을",
+    "를",
+    "이",
+    "가",
+    "은",
+    "는",
+    "도",
+    "만",
+    "내용",
+    "내용을",
+    "내용를",
+    "내용만",
+    "일정",
+    "일정을",
+    "일정만",
+}
+CALENDAR_TITLE_NOISE_PATTERN = re.compile(r"[0-9:.-]+")
+GMAIL_REPLY_BODY_PREFIX_PATTERN = re.compile(r"^(?:답장\s*내용|회신\s*내용|내용|본문)\s*[:：-]?\s*", re.IGNORECASE)
+GMAIL_REPLY_BODY_SUFFIX_PATTERNS = (
+    re.compile(r"\s*메일에\s*(?:이어서\s*)?답장해\s*줘\s*$"),
+    re.compile(r"\s*메일에\s*회신해\s*줘\s*$"),
+    re.compile(r"\s*(?:이어서\s*)?답장해\s*줘\s*$"),
+    re.compile(r"\s*회신해\s*줘\s*$"),
+)
+
+
+def extract_structured_request(
+    message: str,
+    channel: str | None = None,
+    history: list[dict[str, str]] | None = None,
+) -> StructuredExtraction:
+    baseline = _extract_rule_based_request(message, channel)
+    if baseline.intent in settings.local_llm.structured_extraction_targets:
+        llm_extraction = generate_structured_extraction(
+            message,
+            channel,
+            history,
+            baseline.model_dump(by_alias=True, exclude_none=True),
+        )
+        if llm_extraction is not None:
+            return _merge_structured_extraction(baseline, llm_extraction)
+        baseline.metadata = {
+            **dict(baseline.metadata),
+            "llm_attempted": True,
+            "llm_used": False,
+        }
+    return baseline
+
+
+def _extract_rule_based_request(message: str, channel: str | None = None) -> StructuredExtraction:
+    intent = classify_message_intent(message)
+    normalized_message = re.sub(r"\s+", " ", message).strip()
+    domain, action = _resolve_domain_action(intent)
+    approval_required = intent in ACTION_LABELS
+    confidence = 0.85 if intent != "chat" else 0.45
+    missing_fields: list[str] = []
+    needs_clarification = False
+    calendar_payload = None
+    mail_payload = None
+    note_payload = None
+
+    if intent in {"calendar_create", "calendar_update", "calendar_delete"}:
+        parsed = parse_calendar_request(message, intent)
+        if parsed is None:
+            needs_clarification = True
+            confidence = 0.55
+            missing_fields = ["title", "date_or_time"] if intent == "calendar_delete" else ["title", "date", "time"]
+        else:
+            calendar_payload = CalendarExtractionPayload.model_validate(parsed)
+    elif intent in {"gmail_draft", "gmail_send", "gmail_reply", "gmail_thread_reply"}:
+        parsed = (
+            parse_gmail_compose_request(message, intent)
+            if intent in {"gmail_draft", "gmail_send"}
+            else parse_gmail_reply_request(message, intent)
+        )
+        if parsed is None:
+            needs_clarification = True
+            confidence = 0.55
+            missing_fields = ["message", "target"] if intent in {"gmail_reply", "gmail_thread_reply"} else ["recipients", "subject", "body"]
+        else:
+            mail_payload = MailExtractionPayload(
+                recipients=_split_emails(parsed.get("send_to", "")) if parsed.get("send_to") else [],
+                cc=_split_emails(parsed.get("cc_list", "")) if parsed.get("cc_list") else [],
+                bcc=_split_emails(parsed.get("bcc_list", "")) if parsed.get("bcc_list") else [],
+                subject=parsed.get("subject"),
+                body=parsed.get("message"),
+                threadReference=parsed.get("thread_id"),
+                messageReference=parsed.get("message_id"),
+                searchQuery=parsed.get("search_query"),
+                attachmentUrls=[parsed["attachment_url"]] if parsed.get("attachment_url") else [],
+            )
+    elif intent == "macos_note_create":
+        parsed = parse_macos_note_request(message)
+        if parsed is None:
+            needs_clarification = True
+            confidence = 0.55
+            missing_fields = ["title", "body"]
+        else:
+            note_payload = NoteExtractionPayload.model_validate(parsed)
+
+    return StructuredExtraction(
+        rawMessage=message,
+        normalizedMessage=normalized_message,
+        channel=channel,
+        domain=domain,
+        action=action,
+        intent=intent,
+        confidence=confidence,
+        needsClarification=needs_clarification,
+        approvalRequired=approval_required,
+        missingFields=missing_fields,
+        calendar=calendar_payload,
+        mail=mail_payload,
+        note=note_payload,
+        metadata={
+            "schema_mode": "rule_based_baseline",
+        },
+    )
+
+
+def _resolve_domain_action(intent: str) -> tuple[str, str]:
+    if intent.startswith("calendar"):
+        return "calendar", intent.removeprefix("calendar_")
+    if intent.startswith("gmail"):
+        return "mail", intent.removeprefix("gmail_")
+    if intent.startswith("macos_note"):
+        return "note", "create"
+    if intent == "chat":
+        return "chat", "respond"
+    return "unknown", intent
+
+
+def _prefer_text(primary: str | None, fallback: str | None) -> str | None:
+    if primary is None:
+        return fallback
+    if isinstance(primary, str) and primary == "":
+        return fallback
+    return primary
+
+
+def _prefer_llm_text(llm_value: str | None, baseline_value: str | None) -> str | None:
+    if llm_value is None:
+        return baseline_value
+    if isinstance(llm_value, str) and llm_value == "":
+        return baseline_value
+    return llm_value
+
+
+def _merge_calendar_payload(
+    baseline: CalendarExtractionPayload | None,
+    llm_payload: CalendarExtractionPayload | None,
+) -> CalendarExtractionPayload | None:
+    if baseline is None:
+        return llm_payload
+    if llm_payload is None:
+        return baseline
+    return CalendarExtractionPayload(
+        title=_prefer_text(baseline.title, llm_payload.title),
+        searchTitle=_prefer_text(baseline.search_title, llm_payload.search_title),
+        date=_prefer_text(baseline.date, llm_payload.date),
+        startAt=_prefer_text(baseline.start_at, llm_payload.start_at),
+        endAt=_prefer_text(baseline.end_at, llm_payload.end_at),
+        searchTimeMin=_prefer_text(baseline.search_time_min, llm_payload.search_time_min),
+        searchTimeMax=_prefer_text(baseline.search_time_max, llm_payload.search_time_max),
+        timezone=_prefer_text(baseline.timezone, llm_payload.timezone),
+    )
+
+
+def _merge_mail_payload(
+    baseline: MailExtractionPayload | None,
+    llm_payload: MailExtractionPayload | None,
+) -> MailExtractionPayload | None:
+    if baseline is None:
+        return llm_payload
+    if llm_payload is None:
+        return baseline
+    reply_mode = _prefer_llm_text(llm_payload.reply_mode, baseline.reply_mode)
+    merged_body = _prefer_llm_text(llm_payload.body, baseline.body)
+    if reply_mode in {"reply", "thread"}:
+        merged_body = _normalize_gmail_reply_body(merged_body)
+    return MailExtractionPayload(
+        replyMode=reply_mode,
+        recipients=baseline.recipients or llm_payload.recipients,
+        cc=baseline.cc or llm_payload.cc,
+        bcc=baseline.bcc or llm_payload.bcc,
+        sender=_prefer_llm_text(llm_payload.sender, baseline.sender),
+        subject=_prefer_llm_text(llm_payload.subject, baseline.subject),
+        body=merged_body,
+        threadReference=_prefer_llm_text(llm_payload.thread_reference, baseline.thread_reference),
+        messageReference=_prefer_llm_text(llm_payload.message_reference, baseline.message_reference),
+        searchQuery=_prefer_llm_text(llm_payload.search_query, baseline.search_query),
+        attachmentUrls=baseline.attachment_urls or llm_payload.attachment_urls,
+    )
+
+
+def _merge_note_payload(
+    baseline: NoteExtractionPayload | None,
+    llm_payload: NoteExtractionPayload | None,
+) -> NoteExtractionPayload | None:
+    if baseline is None:
+        return llm_payload
+    if llm_payload is None:
+        return baseline
+    return NoteExtractionPayload(
+        title=_prefer_text(baseline.title, llm_payload.title),
+        body=_prefer_text(baseline.body, llm_payload.body),
+        folder=_prefer_text(baseline.folder, llm_payload.folder),
+    )
+
+
+def _merge_structured_extraction(
+    baseline: StructuredExtraction,
+    llm_extraction: StructuredExtraction,
+) -> StructuredExtraction:
+    merged = StructuredExtraction(
+        version=baseline.version,
+        rawMessage=baseline.raw_message,
+        normalizedMessage=baseline.normalized_message,
+        channel=baseline.channel,
+        domain=baseline.domain,
+        action=baseline.action,
+        intent=baseline.intent,
+        confidence=max(baseline.confidence, llm_extraction.confidence),
+        needsClarification=llm_extraction.needs_clarification,
+        approvalRequired=baseline.approval_required,
+        missingFields=llm_extraction.missing_fields or baseline.missing_fields,
+        references=llm_extraction.references or baseline.references,
+        calendar=_merge_calendar_payload(baseline.calendar, llm_extraction.calendar),
+        mail=_merge_mail_payload(baseline.mail, llm_extraction.mail),
+        note=_merge_note_payload(baseline.note, llm_extraction.note),
+        metadata={
+            **dict(llm_extraction.metadata),
+            "merged_with_baseline": True,
+        },
+    )
+    return merged
+
+
+def _calendar_payload_to_request(payload: CalendarExtractionPayload | None, intent: str) -> dict[str, str] | None:
+    if payload is None:
+        return None
+    if intent == "calendar_create":
+        if not payload.title or not payload.start_at or not payload.end_at:
+            return None
+        return {
+            "title": payload.title,
+            "start_at": payload.start_at,
+            "end_at": payload.end_at,
+            "timezone": payload.timezone or "Asia/Seoul",
+        }
+    if intent == "calendar_update":
+        if (
+            not payload.title
+            or not payload.start_at
+            or not payload.end_at
+            or not payload.search_title
+            or not payload.search_time_min
+            or not payload.search_time_max
+        ):
+            return None
+        return {
+            "title": payload.title,
+            "start_at": payload.start_at,
+            "end_at": payload.end_at,
+            "search_title": payload.search_title,
+            "new_title": payload.title,
+            "search_time_min": payload.search_time_min,
+            "search_time_max": payload.search_time_max,
+            "timezone": payload.timezone or "Asia/Seoul",
+        }
+    if intent == "calendar_delete":
+        if not payload.search_title or not payload.search_time_min or not payload.search_time_max:
+            return None
+        return {
+            "search_title": payload.search_title,
+            "search_time_min": payload.search_time_min,
+            "search_time_max": payload.search_time_max,
+            "timezone": payload.timezone or "Asia/Seoul",
+        }
+    return None
+
+
+def _mail_payload_to_reply_request(payload: MailExtractionPayload | None, intent: str) -> dict[str, str] | None:
+    if payload is None or not payload.body:
+        return None
+    cleaned_body = _normalize_gmail_reply_body(payload.body)
+    if not cleaned_body:
+        return None
+    result = {
+        "reply_mode": payload.reply_mode or ("thread" if intent == "gmail_thread_reply" else "reply"),
+        "message": cleaned_body,
+        "email_type": "text",
+    }
+    if payload.subject:
+        result["subject"] = payload.subject
+    if payload.sender:
+        result["sender"] = payload.sender
+    if payload.thread_reference:
+        result["thread_id"] = payload.thread_reference
+    if payload.message_reference:
+        result["message_id"] = payload.message_reference
+    if payload.search_query:
+        result["search_query"] = payload.search_query
+    if payload.cc:
+        result["cc_list"] = ", ".join(payload.cc)
+    if payload.bcc:
+        result["bcc_list"] = ", ".join(payload.bcc)
+    if payload.attachment_urls:
+        result["attachment_url"] = payload.attachment_urls[0]
+    if not result.get("thread_id") and not result.get("message_id") and not result.get("search_query"):
+        return None
+    return result
+
+
+def _normalize_gmail_reply_body(body: str | None) -> str | None:
+    if not body:
+        return None
+    normalized = body.strip()
+    normalized = GMAIL_REPLY_BODY_PREFIX_PATTERN.sub("", normalized)
+    for pattern in GMAIL_REPLY_BODY_SUFFIX_PATTERNS:
+        normalized = pattern.sub("", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip(" .,!?:;\n\t")
+    return normalized or None
+
+
+def _mail_payload_to_compose_request(payload: MailExtractionPayload | None, intent: str) -> dict[str, str] | None:
+    if payload is None or not payload.recipients or not payload.subject or not payload.body:
+        return None
+    result = {
+        "send_to": ", ".join(payload.recipients),
+        "subject": payload.subject,
+        "message": payload.body,
+        "email_type": "text",
+        "action": intent,
+    }
+    if payload.cc:
+        result["cc_list"] = ", ".join(payload.cc)
+    if payload.bcc:
+        result["bcc_list"] = ", ".join(payload.bcc)
+    if payload.attachment_urls:
+        result["attachment_url"] = payload.attachment_urls[0]
+    return result
+
 
 def classify_message_intent(message: str) -> str:
     lowered = message.lower()
     has_calendar_keyword = any(keyword in lowered for keyword in CALENDAR_AUTOMATION_KEYWORDS)
+    has_calendar_reference = CALENDAR_REFERENCE_PATTERN.search(message) is not None or TIME_FRAGMENT_PATTERN.search(message) is not None
+    has_calendar_context = has_calendar_keyword or has_calendar_reference
     has_gmail_keyword = any(keyword in lowered for keyword in GMAIL_AUTOMATION_KEYWORDS) or EMAIL_ADDRESS_PATTERN.search(message) is not None
 
-    if any(keyword in message for keyword in CALENDAR_UPDATE_KEYWORDS) and any(
-        keyword in lowered for keyword in CALENDAR_AUTOMATION_KEYWORDS
-    ):
+    if any(keyword in message for keyword in CALENDAR_UPDATE_KEYWORDS) and has_calendar_context:
         return "calendar_update"
-    if any(keyword in message for keyword in CALENDAR_CREATE_KEYWORDS) and any(
-        keyword in lowered for keyword in CALENDAR_AUTOMATION_KEYWORDS
-    ):
+    if any(keyword in message for keyword in CALENDAR_CREATE_KEYWORDS) and has_calendar_context:
         return "calendar_create"
-    if has_calendar_keyword and any(keyword in message for keyword in CALENDAR_DELETE_KEYWORDS):
+    if has_calendar_context and any(keyword in message for keyword in CALENDAR_DELETE_KEYWORDS):
         return "calendar_delete"
     if has_calendar_keyword:
         return "calendar_summary"
@@ -154,8 +505,10 @@ def process_message(
     user_id: str | None = None,
     intent_override: str | None = None,
     approval_granted: bool = False,
+    structured_extraction: StructuredExtraction | None = None,
 ) -> dict[str, str | None]:
-    intent = intent_override or classify_message_intent(message)
+    extraction = structured_extraction or extract_structured_request(message, channel)
+    intent = intent_override or extraction.intent
 
     if intent == "calendar_summary" and settings.n8n_webhook_path:
         reply = run_n8n_automation(message, channel, session_id, user_id, settings.n8n_webhook_path)
@@ -165,17 +518,18 @@ def process_message(
         return {"reply": fallback_reply, "route": "n8n_fallback", "action_type": None}
 
     if intent in {"calendar_create", "calendar_update", "calendar_delete"}:
-        parsed = parse_calendar_request(message, intent)
+        parsed = _calendar_payload_to_request(extraction.calendar, intent) if extraction.calendar else parse_calendar_request(message, intent)
         if parsed is None:
             example = (
                 "내일 오후 3시에 치과 일정 추가해줘"
                 if intent == "calendar_create"
                 else "내일 오후 4시 치과 일정 변경해줘"
                 if intent == "calendar_update"
-                else "내일 오후 3시 치과 일정 삭제해줘"
+                else "오늘 06:00-07:00 피자 시키기 일정 삭제해줘"
             )
+            guidance = "삭제할 일정의 제목이나 시간을 더 구체적으로 알려주세요. " if intent == "calendar_delete" else ""
             return {
-                "reply": f"일정 요청을 이해하지 못했습니다. 예: {example}",
+                "reply": f"일정 요청을 이해하지 못했습니다. {guidance}예: {example}",
                 "route": "validation_error",
                 "action_type": intent,
             }
@@ -198,7 +552,7 @@ def process_message(
         return {"reply": fallback_reply, "route": "n8n_fallback", "action_type": intent}
 
     if intent in {"gmail_draft", "gmail_send"}:
-        parsed = parse_gmail_compose_request(message, intent)
+        parsed = _mail_payload_to_compose_request(extraction.mail, intent) if extraction.mail else parse_gmail_compose_request(message, intent)
         if parsed is None:
             return {
                 "reply": "메일 작성 요청을 이해하지 못했습니다. 예: test@example.com로 제목 주간 보고, 내용 오늘 작업 완료 메일 초안 작성해줘",
@@ -224,7 +578,7 @@ def process_message(
         return {"reply": fallback_reply, "route": "n8n_fallback", "action_type": intent}
 
     if intent in {"gmail_reply", "gmail_thread_reply"}:
-        parsed = parse_gmail_reply_request(message, intent)
+        parsed = _mail_payload_to_reply_request(extraction.mail, intent) if extraction.mail else parse_gmail_reply_request(message, intent)
         if parsed is None:
             return {
                 "reply": "메일 회신 요청을 이해하지 못했습니다. 예: 제목 AI Assistant Gmail 발송 테스트 내용 확인했습니다 메일에 답장해줘",
@@ -483,10 +837,13 @@ def parse_gmail_reply_request(message: str, intent: str) -> dict[str, str] | Non
 
     if not body:
         return None
+    normalized_body = _normalize_gmail_reply_body(body)
+    if not normalized_body:
+        return None
 
     result = {
         "reply_mode": "thread" if intent == "gmail_thread_reply" else "reply",
-        "message": body,
+        "message": normalized_body,
         "email_type": "text",
     }
     if subject:
@@ -559,7 +916,7 @@ def _extract_base_date(message: str):
     month_day = re.search(r"(\d{1,2})\s*월\s*(\d{1,2})\s*일", message)
     if month_day:
         return _resolve_month_day(now, int(month_day.group(1)), int(month_day.group(2)))
-    numeric_month_day = re.search(r"(?<!\d)(\d{1,2})[./-](\d{1,2})(?!\d)", message)
+    numeric_month_day = re.search(r"(?<![\d:])(\d{1,2})[./-](\d{1,2})(?![\d:])", message)
     if numeric_month_day:
         return _resolve_month_day(now, int(numeric_month_day.group(1)), int(numeric_month_day.group(2)))
     return now
@@ -596,8 +953,15 @@ def _extract_calendar_title(message: str, intent: str) -> str:
     else:
         working = re.sub(r"(삭제|취소|지워줘|지워 줘|제거해줘|제거해 줘|없애줘|없애 줘|해줘|해주세요)", " ", working)
     working = re.sub(r"(으로|로|부터|까지)", " ", working)
+    working = re.sub(r"(?:^|\s)내용(?:을|를|이|가|은|는|도|만)?(?=\s|$)", " ", working)
     working = re.sub(r"\s+", " ", working).strip(" .,")
-    return working
+    tokens = [token.strip(" .,") for token in working.split()]
+    filtered_tokens = [
+        token
+        for token in tokens
+        if token and token not in CALENDAR_TITLE_STOP_TOKENS and not CALENDAR_TITLE_NOISE_PATTERN.fullmatch(token)
+    ]
+    return " ".join(filtered_tokens)
 
 
 def _build_calendar_search_window(
