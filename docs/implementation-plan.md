@@ -68,11 +68,12 @@
 - `browser-runner`를 선택 프로필 서비스로 두고 `POST /assistant/api/browser/read` read-only 웹 추출 경로를 추가했다.
 - 호스트용 `macos_runner`를 추가하고 승인 후 Notes 메모를 생성하는 AppleScript 시나리오를 연결했다.
 - 외부 접근은 `Kakao=Cloudflare Tunnel`, `운영자 브라우저/n8n/SSH=Tailscale` 기준으로 정리하고, Compose에 선택 프로필 `cloudflared` 서비스를 추가했다.
+- `cloudflared`는 `docker compose --env-file .env --profile edge up -d cloudflared` 기준으로 기동 검증했고, 공개 호스트에서 `GET /assistant/api/health`, `POST /assistant/api/kakao/webhook` 모두 실제 응답을 확인했다.
 
 ## 현재 기준 남은 우선순위
 
 1. `docs/implementation-plan.md`, `README.md`, `docs/architecture.md` 기준의 문서 상태를 계속 동기화한다.
-2. Cloudflare Tunnel 호스트명 확정 후 Kakao webhook 공개 주소와 Slack 공개 이벤트 주소를 분리하거나 통합할지 결정하고 실제 도메인 값을 반영한다.
+2. Slack 공개 이벤트 주소를 Cloudflare Tunnel 호스트와 분리할지 같은 호스트에서 `/assistant/api/slack/events`로 함께 운영할지 결정하고 실제 Slack 앱 설정에 반영한다.
 3. Playwright 기반 브라우저 자동화 read-only 시나리오를 검증하고, 이후 승인 필요 시나리오로 확장할 정책과 결과 저장 형식을 정한다.
 4. AppleScript 기반 macOS 자동화는 Notes 외 추가 앱 시나리오와 권한/장애 복구 기준까지 확장한다.
 5. FastAPI 중심 라우팅에서 LangGraph 기반 상태 라우팅과 승인 후 재개 구조로 점진 전환한다.

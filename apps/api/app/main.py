@@ -57,6 +57,8 @@ app = FastAPI(title="AI Assistant API", version="0.1.0")
 
 APPROVE_PATTERN = re.compile(r"^(승인|approve)\s+([a-zA-Z0-9-]+)$", re.IGNORECASE)
 REJECT_PATTERN = re.compile(r"^(거절|reject)\s+([a-zA-Z0-9-]+)$", re.IGNORECASE)
+KAKAO_BASIC_CARD_DESCRIPTION_LIMIT = 230
+KAKAO_SIMPLE_TEXT_LIMIT = 1000
 
 DEFAULT_KAKAO_QUICK_REPLIES = [
     KakaoQuickReply(label="일정 요약", action="message", messageText="오늘 일정 요약해줘"),
@@ -89,6 +91,24 @@ DEFAULT_KAKAO_QUICK_REPLIES = [
 ]
 
 
+def _format_kakao_display_text(text: str) -> str:
+    formatted = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    formatted = re.sub(r"\s*/\s*(?=(?:\d+\.|[-*]))", "\n\n", formatted)
+    formatted = re.sub(r"(?<=요약입니다\.)\s+", "\n\n", formatted)
+    formatted = re.sub(r"(?<=[.!?])\s+(?=\d+\.)", "\n\n", formatted)
+    formatted = re.sub(r"[ \t]+", " ", formatted)
+    formatted = re.sub(r" ?\n ?", "\n", formatted)
+    formatted = re.sub(r"\n{3,}", "\n\n", formatted)
+    return formatted or "응답을 생성했지만 표시할 내용이 없습니다."
+
+
+def _truncate_kakao_text(text: str, limit: int) -> str:
+    formatted = _format_kakao_display_text(text)
+    if len(formatted) <= limit:
+        return formatted
+    return formatted[: limit - 3].rstrip() + "..."
+
+
 def build_kakao_response(
     reply: str,
     session_id: str,
@@ -103,14 +123,15 @@ def build_kakao_response(
         "approval_required": "승인 필요",
         "validation_error": "입력 확인 필요",
     }.get(route, "응답")
-    detail = f"{reply}\n\nsession={session_id}, route={route}"
+    card_detail = _truncate_kakao_text(reply, KAKAO_BASIC_CARD_DESCRIPTION_LIMIT)
+    simple_detail = _truncate_kakao_text(reply, KAKAO_SIMPLE_TEXT_LIMIT)
 
     if route == "approval_required" and approval_ticket_id:
         outputs = [
             KakaoBasicCardOutput(
                 basicCard=KakaoBasicCard(
                     title=route_label,
-                    description=detail,
+                    description=card_detail,
                     buttons=[
                         KakaoButton(action="message", label="승인", messageText=f"승인 {approval_ticket_id}"),
                         KakaoButton(action="message", label="거절", messageText=f"거절 {approval_ticket_id}"),
@@ -129,7 +150,7 @@ def build_kakao_response(
             KakaoBasicCardOutput(
                 basicCard=KakaoBasicCard(
                     title=route_label,
-                    description=detail,
+                    description=card_detail,
                     buttons=[
                         KakaoButton(action="message", label="오늘 일정 다시 확인", messageText="오늘 일정 다시 요약해줘"),
                         KakaoButton(action="message", label="최근 메일 확인", messageText="최근 메일 요약해줘"),
@@ -144,7 +165,7 @@ def build_kakao_response(
     else:
         outputs = [
             KakaoSimpleTextOutput(
-                simpleText=KakaoSimpleText(text=detail)
+                simpleText=KakaoSimpleText(text=simple_detail)
             )
         ]
         quick_replies = DEFAULT_KAKAO_QUICK_REPLIES
@@ -283,6 +304,7 @@ async def browser_read(payload: BrowserReadRequest, db: Session = Depends(get_db
 
 
 @app.post("/api/slack/events")
+@app.post("/api/slack/events/")
 async def slack_events(
     request: Request,
     db: Session = Depends(get_db),
@@ -352,24 +374,29 @@ async def slack_events(
     }
 
 
-@app.post("/api/kakao/webhook", response_model=KakaoWebhookResponse)
+@app.post("/api/kakao/webhook", response_model=KakaoWebhookResponse, response_model_exclude_none=True)
 def kakao_webhook(payload: KakaoWebhookUtterance, db: Session = Depends(get_db)) -> KakaoWebhookResponse:
-    approval_command = _match_approval_command(payload.utterance)
+    utterance = payload.resolved_utterance()
+    user_id = payload.resolved_user_id()
+    if not utterance:
+        raise HTTPException(status_code=400, detail="kakao utterance not found")
+
+    approval_command = _match_approval_command(utterance)
     if approval_command is not None:
-        session_id, reply, route, approval_ticket_id = _handle_approval_command(approval_command, payload.user.id if payload.user else None, db)
+        session_id, reply, route, approval_ticket_id = _handle_approval_command(approval_command, user_id, db)
         return build_kakao_response(reply, session_id, route, approval_ticket_id)
 
     session = create_session(
         db,
         channel="kakao",
-        user_id=payload.user.id if payload.user else None,
-        message=payload.utterance,
+        user_id=user_id,
+        message=utterance,
     )
     result = process_message(
-        payload.utterance,
+        utterance,
         "kakao",
         session.id,
-        payload.user.id if payload.user else None,
+        user_id,
     )
     approval_ticket_id = None
     if result["route"] == "approval_required" and result["action_type"]:
@@ -378,13 +405,13 @@ def kakao_webhook(payload: KakaoWebhookUtterance, db: Session = Depends(get_db))
             db,
             session_id=session.id,
             task_type=str(result["action_type"]),
-            detail=payload.utterance,
+            detail=utterance,
             status="pending_approval",
         )
         approval_ticket_id = ticket.id
         reply = f"{result['reply']} ticket={ticket.id}"
     else:
-        create_task_run(db, session_id=session.id, task_type=str(result["route"]), detail=payload.utterance)
+        create_task_run(db, session_id=session.id, task_type=str(result["route"]), detail=utterance)
         reply = str(result["reply"])
     return build_kakao_response(reply, session.id, str(result["route"]), approval_ticket_id)
 

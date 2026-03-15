@@ -5,7 +5,8 @@
 - FastAPI는 `POST /assistant/api/slack/events` 경로에서 Slack Events API 요청을 받는다.
 - 현재 구현 범위는 `url_verification`, Slack 서명 검증, DM 또는 `app_mention` 메시지 처리, 승인 명령 처리, Bot token 기반 응답 전송이다.
 - 로컬 payload 기준으로 `app_mention`, DM, 승인 필요 응답 경로까지 검증했다.
-- 아직 공개 HTTPS 도메인이 설정되지 않아 실제 Slack 워크스페이스 토큰을 연결한 실환경 검증은 보류 상태다.
+- 공개 HTTPS 엔드포인트는 준비되었고 `https://ai-assistant-kakao.la9527.cloud/assistant/api/slack/events` 기준 `url_verification` 과 대표 `app_mention` payload 응답까지 확인했다.
+- 현재 실환경 Slack 워크스페이스 검증의 남은 조건은 `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` 설정과 실제 앱 설치다.
 
 ## 필요한 환경변수
 
@@ -23,7 +24,7 @@
 환경변수를 수정한 뒤에는 아래 명령으로 API를 다시 빌드한다.
 
 ```bash
-docker compose -f infra/docker/docker-compose.yml up -d --build api
+docker compose --env-file .env -f infra/docker/docker-compose.yml up -d --build api
 ```
 
 ## Slack 앱 생성 절차
@@ -69,8 +70,10 @@ https://<your-domain>/assistant/api/slack/events
 예시:
 
 ```text
-https://assistant.example.com/assistant/api/slack/events
+https://ai-assistant-kakao.la9527.cloud/assistant/api/slack/events
 ```
+
+권장 입력은 위 경로 그대로이며 끝에 `/` 를 붙이지 않는 형식이다. 다만 현재 서버는 `/assistant/api/slack/events/` 도 함께 처리하도록 보완되어 있어 trailing slash 때문에 `url_verification` 이 실패하지 않도록 수정된 상태다.
 
 4. URL 검증이 통과하면 Bot Events를 추가한다.
 
@@ -121,7 +124,7 @@ https://assistant.example.com/assistant/api/slack/events
 
 1. `.env` 에 `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` 를 넣는다.
 2. API를 재빌드한다.
-3. Slack 앱의 `Event Subscriptions` 에 `https://<your-domain>/assistant/api/slack/events` 를 저장한다.
+3. Slack 앱의 `Event Subscriptions` 에 `https://ai-assistant-kakao.la9527.cloud/assistant/api/slack/events` 를 저장한다.
 4. 앱을 워크스페이스에 설치한다.
 5. 앱을 테스트할 채널에 초대한다.
 6. 아래 순서로 실제 메시지를 보낸다.
@@ -141,14 +144,15 @@ https://assistant.example.com/assistant/api/slack/events
 
 현재 보류 메모:
 
-- 공개 도메인과 HTTPS가 준비되기 전에는 이 절차를 실제 Slack 워크스페이스에 적용하지 않는다.
-- 현재는 로컬 payload 검증까지만 완료된 상태로 관리한다.
+- 공개 엔드포인트와 `url_verification` 응답은 준비됐다.
+- 현재는 Slack 앱 토큰과 signing secret이 비어 있어서 실제 워크스페이스 메시지 송수신 검증만 남아 있다.
 
 ## 장애 점검 포인트
 
 ### URL verification 실패
 
 - `Request URL` 경로가 `/assistant/api/slack/events` 인지 확인한다.
+- 과거에는 끝에 `/` 가 붙으면 리다이렉트가 발생해 Slack 검증이 실패할 수 있었지만, 현재는 `/assistant/api/slack/events/` 도 직접 처리하도록 수정됐다.
 - reverse proxy가 Slack 요청을 API 컨테이너로 넘기는지 확인한다.
 - HTTPS 인증서가 정상인지 확인한다.
 

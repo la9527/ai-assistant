@@ -125,6 +125,7 @@ Kakao 채널을 추가한다.
 ## 핵심 설계 문서
 
 - [docs/architecture.md](docs/architecture.md)
+- [docs/kakao-integration.md](docs/kakao-integration.md)
 - [docs/remote-access.md](docs/remote-access.md)
 - [docs/google-calendar-integration.md](docs/google-calendar-integration.md)
 - [docs/gmail-integration.md](docs/gmail-integration.md)
@@ -139,6 +140,8 @@ Kakao 채널을 추가한다.
 - Gmail 회신과 thread 이어쓰기 승인 실행
 - Gmail 첨부 URL 1건 포함 초안 작성, 실제 발송, 회신 실행
 - Kakao 자동화 카드와 quick reply 기준의 메일 첨부 예시 UX 검증
+- Cloudflare Tunnel 공개 호스트 `https://ai-assistant-kakao.la9527.cloud` 기준 `GET /assistant/api/health` 검증
+- Cloudflare Tunnel 공개 호스트 기준 `POST /assistant/api/kakao/webhook` 실응답 검증
 - Slack Events API 기준 `url_verification`, app mention, DM, 승인 필요 응답 경로 로컬 payload 검증
 
 ## 현재 보류 사항

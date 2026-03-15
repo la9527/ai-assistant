@@ -53,17 +53,69 @@ class KakaoWebhookUser(BaseModel):
     id: str | None = None
 
 
+class KakaoWebhookUserProperties(BaseModel):
+    plusfriend_user_key: str | None = Field(default=None, alias="plusfriendUserKey")
+    bot_user_key: str | None = Field(default=None, alias="botUserKey")
+    app_user_id: str | None = Field(default=None, alias="appUserId")
+    is_friend: bool | None = Field(default=None, alias="isFriend")
+
+
+class KakaoWebhookRequestUser(BaseModel):
+    id: str | None = None
+    type: str | None = None
+    properties: KakaoWebhookUserProperties | None = None
+
+
+class KakaoWebhookUserRequestBlock(BaseModel):
+    id: str | None = None
+    name: str | None = None
+
+
+class KakaoWebhookUserRequest(BaseModel):
+    block: KakaoWebhookUserRequestBlock | None = None
+    user: KakaoWebhookRequestUser | None = None
+    utterance: str | None = None
+    lang: str | None = None
+    timezone: str | None = None
+    params: dict[str, str] | None = None
+
+
+class KakaoWebhookAction(BaseModel):
+    id: str | None = None
+    name: str | None = None
+    params: dict[str, str] | None = None
+    detail_params: dict[str, dict[str, str]] | None = Field(default=None, alias="detailParams")
+    client_extra: dict[str, str] | None = Field(default=None, alias="clientExtra")
+
+
 class KakaoWebhookIntent(BaseModel):
     id: str | None = None
     name: str | None = None
 
 
 class KakaoWebhookUtterance(BaseModel):
-    utterance: str
+    utterance: str | None = None
     user_request_id: str | None = Field(default=None, alias="userRequestId")
     callback_url: str | None = Field(default=None, alias="callbackUrl")
     user: KakaoWebhookUser | None = None
     intent: KakaoWebhookIntent | None = None
+    user_request: KakaoWebhookUserRequest | None = Field(default=None, alias="userRequest")
+    action: KakaoWebhookAction | None = None
+    bot: dict[str, str] | None = None
+
+    def resolved_utterance(self) -> str | None:
+        if self.utterance:
+            return self.utterance
+        if self.user_request and self.user_request.utterance:
+            return self.user_request.utterance
+        return None
+
+    def resolved_user_id(self) -> str | None:
+        if self.user and self.user.id:
+            return self.user.id
+        if self.user_request and self.user_request.user and self.user_request.user.id:
+            return self.user_request.user.id
+        return None
 
 
 class KakaoSimpleText(BaseModel):
