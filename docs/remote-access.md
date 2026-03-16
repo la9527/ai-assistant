@@ -110,6 +110,11 @@ GUACAMOLE_VNC_HOST=host.docker.internal
 GUACAMOLE_VNC_PORT=5900
 GUACAMOLE_VNC_USERNAME=<macos-short-username>
 GUACAMOLE_VNC_USE_LOGIN_PASSWORD=true
+GUACAMOLE_VNC_COLOR_DEPTH=16
+GUACAMOLE_VNC_COMPRESS_LEVEL=6
+GUACAMOLE_VNC_QUALITY_LEVEL=5
+GUACAMOLE_VNC_DISABLE_DISPLAY_RESIZE=false
+GUACAMOLE_VNC_ENABLE_AUDIO=false
 ```
 
 위 설정을 쓰면 Guacamole 로그인 화면에 입력한 `GUACAMOLE_PASSWORD` 값이 그대로 원격 macOS 인증 비밀번호로 전달된다. 즉 운영자는 Guacamole에 로그인할 때 macOS 비밀번호를 입력하면 된다.
@@ -138,6 +143,21 @@ infra/scripts/start-remote-desktop.sh
 
 - one-step 로그인: `GUACAMOLE_VNC_USE_LOGIN_PASSWORD=true`
 - 2단계 프롬프트 로그인: `GUACAMOLE_VNC_USE_LOGIN_PASSWORD=false` 이고 `GUACAMOLE_VNC_PASSWORD` 미설정
+
+외부 네트워크에서 느릴 때 바로 조정할 수 있는 Guacamole VNC 성능 옵션은 아래 값들이다.
+
+- `GUACAMOLE_VNC_COLOR_DEPTH`: 기본 `16`. 더 빠르게 하려면 `8` 까지 낮출 수 있지만 색 손실이 커진다.
+- `GUACAMOLE_VNC_COMPRESS_LEVEL`: 기본 `6`. 느린 회선이면 `7`~`9` 로 올릴 수 있다.
+- `GUACAMOLE_VNC_QUALITY_LEVEL`: 기본 `5`. 느린 회선이면 `3`~`4` 로 낮추면 화면 품질 대신 전송량을 줄일 수 있다.
+- `GUACAMOLE_VNC_DISABLE_DISPLAY_RESIZE`: 기본 `false`. `false` 로 두면 브라우저 크기에 맞춰 VNC 서버가 해상도를 줄일 수 있다.
+- `GUACAMOLE_VNC_ENABLE_AUDIO`: 기본 `false`. VNC는 기본적으로 오디오가 꺼져 있고, 현재 macOS Screen Sharing 경로에서는 별도 PulseAudio 구성이 없으므로 그대로 두면 된다.
+- `GUACAMOLE_VNC_ENCODINGS`: 필요할 때만 수동 지정한다. 예시는 `tight zrle hextile copyrect raw` 이다.
+
+중요한 점은 Guacamole의 VNC 연결은 RDP처럼 `width`/`height` 를 강제로 박는 방식이 아니라는 것이다. 접속 시 해상도를 더 낮추고 싶다면 아래 순서가 가장 현실적이다.
+
+1. 브라우저 창 크기를 작게 열어 Guacamole가 작은 화면 크기를 VNC 서버에 전달하게 한다.
+2. 그래도 크면 macOS 자체 화면 해상도를 한 단계 낮춘다.
+3. 품질보다 속도가 더 중요하면 `GUACAMOLE_VNC_COLOR_DEPTH=8`, `GUACAMOLE_VNC_QUALITY_LEVEL=3~4` 로 더 낮춘다.
 
 ### 중지 명령
 

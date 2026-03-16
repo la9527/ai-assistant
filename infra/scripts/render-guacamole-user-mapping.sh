@@ -27,6 +27,18 @@ vnc_port="$(xml_escape "${GUACAMOLE_VNC_PORT:-5900}")"
 vnc_username="${GUACAMOLE_VNC_USERNAME:-}"
 vnc_use_login_password="${GUACAMOLE_VNC_USE_LOGIN_PASSWORD:-false}"
 vnc_password="${GUACAMOLE_VNC_PASSWORD:-}"
+vnc_color_depth="${GUACAMOLE_VNC_COLOR_DEPTH:-16}"
+vnc_compress_level="${GUACAMOLE_VNC_COMPRESS_LEVEL:-6}"
+vnc_quality_level="${GUACAMOLE_VNC_QUALITY_LEVEL:-5}"
+vnc_disable_display_resize="${GUACAMOLE_VNC_DISABLE_DISPLAY_RESIZE:-false}"
+vnc_enable_audio="${GUACAMOLE_VNC_ENABLE_AUDIO:-false}"
+vnc_encodings="${GUACAMOLE_VNC_ENCODINGS:-}"
+
+escaped_vnc_color_depth="$(xml_escape "$vnc_color_depth")"
+escaped_vnc_compress_level="$(xml_escape "$vnc_compress_level")"
+escaped_vnc_quality_level="$(xml_escape "$vnc_quality_level")"
+escaped_vnc_disable_display_resize="$(xml_escape "$vnc_disable_display_resize")"
+escaped_vnc_enable_audio="$(xml_escape "$vnc_enable_audio")"
 
 cat > "$output_dir/user-mapping.xml" <<EOF
 <user-mapping>
@@ -55,9 +67,23 @@ elif [ -n "$vnc_password" ]; then
 EOF
 fi
 
-cat >> "$output_dir/user-mapping.xml" <<'EOF'
+cat >> "$output_dir/user-mapping.xml" <<EOF
       <param name="cursor">remote</param>
-      <param name="color-depth">16</param>
+      <param name="color-depth">$escaped_vnc_color_depth</param>
+      <param name="compress-level">$escaped_vnc_compress_level</param>
+      <param name="quality-level">$escaped_vnc_quality_level</param>
+      <param name="disable-display-resize">$escaped_vnc_disable_display_resize</param>
+      <param name="enable-audio">$escaped_vnc_enable_audio</param>
+EOF
+
+if [ -n "$vnc_encodings" ]; then
+  escaped_vnc_encodings="$(xml_escape "$vnc_encodings")"
+  cat >> "$output_dir/user-mapping.xml" <<EOF
+      <param name="encodings">$escaped_vnc_encodings</param>
+EOF
+fi
+
+cat >> "$output_dir/user-mapping.xml" <<'EOF'
     </connection>
   </authorize>
 </user-mapping>
