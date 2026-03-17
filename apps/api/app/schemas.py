@@ -18,6 +18,7 @@ class ChatRequest(BaseModel):
     message: str
     channel: str = "web"
     session_id: str | None = None
+    user_id: str | None = Field(default=None, alias="userId")
 
 
 class ChatResponse(BaseModel):
@@ -33,6 +34,7 @@ class BrowserReadRequest(BaseModel):
     url: str
     session_id: str | None = None
     channel: str = "web"
+    user_id: str | None = Field(default=None, alias="userId")
     wait_selector: str | None = Field(default=None, alias="waitSelector")
     timeout_ms: int = Field(default=15000, alias="timeoutMs", ge=1000, le=60000)
     max_chars: int = Field(default=4000, alias="maxChars", ge=500, le=12000)
@@ -301,3 +303,45 @@ class ApprovalTicketResponse(BaseModel):
     route: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class UserIdentityRequest(BaseModel):
+    internal_user_id: str | None = Field(default=None, alias="internalUserId")
+    channel: str
+    external_user_id: str = Field(alias="externalUserId")
+    display_name: str | None = Field(default=None, alias="displayName")
+
+
+class UserIdentityResponse(BaseModel):
+    identity_id: str = Field(alias="identityId")
+    internal_user_id: str = Field(alias="internalUserId")
+    channel: str
+    external_user_id: str = Field(alias="externalUserId")
+    display_name: str | None = Field(default=None, alias="displayName")
+    created_at: datetime = Field(alias="createdAt")
+    updated_at: datetime = Field(alias="updatedAt")
+
+
+class UserMemoryCreateRequest(BaseModel):
+    category: str = "general"
+    content: str
+    source: str = "manual"
+    memory_meta: dict[str, Any] | None = Field(default=None, alias="memoryMeta")
+
+
+class UserMemoryUpdateRequest(BaseModel):
+    category: str | None = None
+    content: str | None = None
+    source: str | None = None
+    memory_meta: dict[str, Any] | None = Field(default=None, alias="memoryMeta")
+
+
+class UserMemoryResponse(BaseModel):
+    memory_id: str = Field(alias="memoryId")
+    internal_user_id: str = Field(alias="internalUserId")
+    category: str
+    content: str
+    source: str
+    memory_meta: dict[str, Any] | None = Field(default=None, alias="memoryMeta")
+    created_at: datetime = Field(alias="createdAt")
+    updated_at: datetime = Field(alias="updatedAt")

@@ -2,6 +2,7 @@ from pydantic import BaseModel
 from pydantic import Field
 from pydantic_settings import BaseSettings
 from pydantic_settings import SettingsConfigDict
+import secrets
 
 
 class LocalLLMSettings(BaseModel):
@@ -70,6 +71,10 @@ class Settings(BaseSettings):
     slack_app_token: str = Field(default="", alias="SLACK_APP_TOKEN")
     slack_signing_secret: str = Field(default="", alias="SLACK_SIGNING_SECRET")
     slack_auto_response_channels_raw: str = Field(default="ai비서", alias="SLACK_AUTO_RESPONSE_CHANNELS")
+    admin_username: str = Field(default="", alias="ADMIN_USERNAME")
+    admin_password: str = Field(default="", alias="ADMIN_PASSWORD")
+    admin_session_secret: str = Field(default="", alias="ADMIN_SESSION_SECRET")
+    admin_session_ttl_seconds: int = Field(default=43200, alias="ADMIN_SESSION_TTL_SECONDS")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -97,6 +102,14 @@ class Settings(BaseSettings):
             for item in self.slack_auto_response_channels_raw.split(",")
             if item.strip()
         }
+
+    @property
+    def admin_auth_enabled(self) -> bool:
+        return bool(self.admin_username.strip() and self.admin_password)
+
+    @property
+    def resolved_admin_session_secret(self) -> str:
+        return self.admin_session_secret or secrets.token_urlsafe(32)
 
 
 settings = Settings()

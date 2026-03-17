@@ -7,6 +7,9 @@ from app.models import ApprovalTicket
 from app.models import AssistantSession
 from app.models import SessionState
 from app.models import TaskRun
+from app.models import UserIdentity
+from app.models import UserMemory
+from app.models import generate_id
 
 
 _UNSET = object()
@@ -22,6 +25,166 @@ def create_session(db: Session, channel: str, user_id: str | None, message: str)
     db.commit()
     db.refresh(session)
     return session
+
+
+def get_latest_session_for_user(db: Session, user_id: str) -> AssistantSession | None:
+    stmt = (
+        select(AssistantSession)
+        .where(AssistantSession.user_id == user_id)
+        .order_by(desc(AssistantSession.updated_at))
+        .limit(1)
+    )
+    return db.execute(stmt).scalar_one_or_none()
+
+
+def get_user_identity(db: Session, channel: str, external_user_id: str) -> UserIdentity | None:
+    stmt = (
+        select(UserIdentity)
+        .where(UserIdentity.channel == channel, UserIdentity.external_user_id == external_user_id)
+        .limit(1)
+    )
+    return db.execute(stmt).scalar_one_or_none()
+
+
+def resolve_user_identity(
+    db: Session,
+    channel: str,
+    external_user_id: str,
+    display_name: str | None = None,
+) -> UserIdentity:
+    identity = get_user_identity(db, channel, external_user_id)
+    if identity is None:
+        identity = UserIdentity(
+            internal_user_id=generate_id(),
+            channel=channel,
+            external_user_id=external_user_id,
+            display_name=display_name,
+        )
+    elif display_name and identity.display_name != display_name:
+        identity.display_name = display_name
+
+    db.add(identity)
+    db.commit()
+    db.refresh(identity)
+    return identity
+
+
+def link_user_identity(
+    db: Session,
+    internal_user_id: str,
+    channel: str,
+    external_user_id: str,
+    display_name: str | None = None,
+) -> UserIdentity:
+    identity = get_user_identity(db, channel, external_user_id)
+    if identity is None:
+        identity = UserIdentity(
+            internal_user_id=internal_user_id,
+            channel=channel,
+            external_user_id=external_user_id,
+            display_name=display_name,
+        )
+    else:
+        identity.internal_user_id = internal_user_id
+        if display_name:
+            identity.display_name = display_name
+
+    db.add(identity)
+    db.commit()
+    db.refresh(identity)
+    return identity
+
+
+def list_user_identities(db: Session, internal_user_id: str) -> list[UserIdentity]:
+    stmt = (
+        select(UserIdentity)
+        .where(UserIdentity.internal_user_id == internal_user_id)
+        .order_by(UserIdentity.channel.asc(), UserIdentity.external_user_id.asc())
+    )
+    return list(db.execute(stmt).scalars().all())
+
+
+def search_user_identities(
+    db: Session,
+    channel: str | None = None,
+    external_user_id: str | None = None,
+    internal_user_id: str | None = None,
+    limit: int = 50,
+) -> list[UserIdentity]:
+    stmt = select(UserIdentity)
+    if channel:
+        stmt = stmt.where(UserIdentity.channel == channel)
+    if external_user_id:
+        stmt = stmt.where(UserIdentity.external_user_id.contains(external_user_id))
+    if internal_user_id:
+        stmt = stmt.where(UserIdentity.internal_user_id == internal_user_id)
+    stmt = stmt.order_by(desc(UserIdentity.updated_at)).limit(limit)
+    return list(db.execute(stmt).scalars().all())
+
+
+def create_user_memory(
+    db: Session,
+    internal_user_id: str,
+    category: str,
+    content: str,
+    source: str = "manual",
+    memory_meta: dict | None = None,
+) -> UserMemory:
+    memory = UserMemory(
+        internal_user_id=internal_user_id,
+        category=category,
+        content=content,
+        source=source,
+        memory_meta=memory_meta,
+    )
+    db.add(memory)
+    db.commit()
+    db.refresh(memory)
+    return memory
+
+
+def get_user_memory(db: Session, memory_id: str) -> UserMemory | None:
+    return db.get(UserMemory, memory_id)
+
+
+def list_user_memories(
+    db: Session,
+    internal_user_id: str,
+    category: str | None = None,
+    limit: int = 20,
+) -> list[UserMemory]:
+    stmt = select(UserMemory).where(UserMemory.internal_user_id == internal_user_id)
+    if category:
+        stmt = stmt.where(UserMemory.category == category)
+    stmt = stmt.order_by(desc(UserMemory.updated_at)).limit(limit)
+    return list(db.execute(stmt).scalars().all())
+
+
+def update_user_memory(
+    db: Session,
+    memory: UserMemory,
+    category: str | object = _UNSET,
+    content: str | object = _UNSET,
+    source: str | object = _UNSET,
+    memory_meta: dict | None | object = _UNSET,
+) -> UserMemory:
+    if category is not _UNSET:
+        memory.category = str(category)
+    if content is not _UNSET:
+        memory.content = str(content)
+    if source is not _UNSET:
+        memory.source = str(source)
+    if memory_meta is not _UNSET:
+        memory.memory_meta = memory_meta
+    db.add(memory)
+    db.commit()
+    db.refresh(memory)
+    return memory
+
+
+def delete_user_memory(db: Session, memory: UserMemory) -> None:
+    db.delete(memory)
+    db.commit()
 
 
 def update_session_message(db: Session, session: AssistantSession, message: str) -> AssistantSession:

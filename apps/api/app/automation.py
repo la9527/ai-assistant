@@ -8,6 +8,7 @@ from app.config import settings
 from app.llm import generate_structured_extraction
 from app.llm import generate_local_reply
 from app.schemas import CalendarExtractionPayload
+from app.schemas import ExtractionReference
 from app.schemas import MailExtractionPayload
 from app.schemas import NoteExtractionPayload
 from app.schemas import StructuredExtraction
@@ -52,6 +53,68 @@ TIME_FRAGMENT_PATTERN = re.compile(
 )
 THREAD_ID_PATTERN = re.compile(r"(?:thread|스레드)\s*(?:id)?\s*[:=]?\s*([A-Za-z0-9_-]+)", re.IGNORECASE)
 MESSAGE_ID_PATTERN = re.compile(r"(?:message|메시지|메일)\s*(?:id)?\s*[:=]?\s*([A-Za-z0-9_-]{10,})", re.IGNORECASE)
+
+REFERENCE_MESSAGE_HINTS = (
+    "그 일정",
+    "그 메일",
+    "그 답장",
+    "그 초안",
+    "그대로",
+    "방금",
+    "앞에",
+    "이전",
+    "아까",
+    "해당",
+)
+
+MEMORY_CUE_PHRASES = (
+    "기억해줘",
+    "기억해 둬",
+    "기억해",
+    "참고해줘",
+    "참고해",
+    "잊지 마",
+    "다음부터",
+    "앞으로",
+    "항상",
+)
+
+MEMORY_STYLE_HINTS = (
+    "답변",
+    "응답",
+    "요약",
+    "말투",
+    "톤",
+    "형식",
+    "불릿",
+    "표로",
+    "짧게",
+    "길게",
+    "핵심만",
+    "존댓말",
+    "반말",
+)
+
+MEMORY_PROFILE_HINTS = (
+    "저는",
+    "나는",
+    "전 ",
+    "내 이름",
+    "제 이름",
+    "내 직함",
+    "우리 팀",
+    "제가 담당",
+)
+
+MEMORY_SECRET_HINTS = (
+    "비밀번호",
+    "password",
+    "otp",
+    "인증번호",
+    "access token",
+    "api key",
+    "secret",
+)
 
 ACTION_LABELS = {
     "calendar_create": "생성",
@@ -350,6 +413,163 @@ def _merge_structured_extraction(
     return merged
 
 
+def apply_reference_context(
+    extraction: StructuredExtraction,
+    previous_extraction: StructuredExtraction | None,
+) -> StructuredExtraction:
+    if previous_extraction is None:
+        return extraction
+
+    should_backfill = extraction.needs_clarification or bool(extraction.missing_fields) or _has_reference_signal(extraction.raw_message)
+    if extraction.domain != previous_extraction.domain or not should_backfill:
+        return extraction
+
+    if extraction.domain == "calendar":
+        return _apply_calendar_reference_context(extraction, previous_extraction)
+    if extraction.domain == "mail":
+        return _apply_mail_reference_context(extraction, previous_extraction)
+    if extraction.domain == "note":
+        return _apply_note_reference_context(extraction, previous_extraction)
+    return extraction
+
+
+def _has_reference_signal(message: str) -> bool:
+    normalized = re.sub(r"\s+", " ", message).strip().lower()
+    return any(hint in normalized for hint in REFERENCE_MESSAGE_HINTS)
+
+
+def _reference_metadata(previous_extraction: StructuredExtraction, label: str | None = None) -> dict[str, object]:
+    return {
+        "reference_context_applied": True,
+        "reference_source_intent": previous_extraction.intent,
+        "reference_source_label": label or previous_extraction.intent,
+    }
+
+
+def _build_reference_item(previous_extraction: StructuredExtraction, label: str | None = None) -> ExtractionReference:
+    return ExtractionReference(
+        referenceType="session_last_extraction",
+        referenceId=previous_extraction.intent,
+        label=label or previous_extraction.intent,
+        score=0.8,
+    )
+
+
+def _apply_calendar_reference_context(
+    extraction: StructuredExtraction,
+    previous_extraction: StructuredExtraction,
+) -> StructuredExtraction:
+    previous = previous_extraction.calendar
+    if previous is None:
+        return extraction
+
+    current = extraction.calendar or CalendarExtractionPayload()
+    merged_calendar = CalendarExtractionPayload(
+        title=current.title or previous.title or previous.search_title,
+        searchTitle=current.search_title or previous.search_title or previous.title,
+        date=current.date or previous.date,
+        startAt=current.start_at or previous.start_at,
+        endAt=current.end_at or previous.end_at,
+        searchTimeMin=current.search_time_min or previous.search_time_min or previous.start_at,
+        searchTimeMax=current.search_time_max or previous.search_time_max or previous.end_at,
+        timezone=current.timezone or previous.timezone,
+    )
+
+    missing_fields = list(extraction.missing_fields)
+    if merged_calendar.search_title and (merged_calendar.search_time_min or merged_calendar.start_at):
+        missing_fields = [field for field in missing_fields if field not in {"title", "date_or_time", "date", "time"}]
+
+    return extraction.model_copy(
+        update={
+            "calendar": merged_calendar,
+            "needs_clarification": bool(missing_fields),
+            "missing_fields": missing_fields,
+            "references": extraction.references or [_build_reference_item(previous_extraction, merged_calendar.search_title or merged_calendar.title)],
+            "metadata": {
+                **dict(extraction.metadata),
+                **_reference_metadata(previous_extraction, merged_calendar.search_title or merged_calendar.title),
+            },
+        }
+    )
+
+
+def _apply_mail_reference_context(
+    extraction: StructuredExtraction,
+    previous_extraction: StructuredExtraction,
+) -> StructuredExtraction:
+    previous = previous_extraction.mail
+    if previous is None:
+        return extraction
+
+    current = extraction.mail or MailExtractionPayload()
+    merged_mail = MailExtractionPayload(
+        replyMode=current.reply_mode or previous.reply_mode,
+        recipients=current.recipients or previous.recipients,
+        cc=current.cc or previous.cc,
+        bcc=current.bcc or previous.bcc,
+        sender=current.sender or previous.sender,
+        subject=current.subject or previous.subject,
+        body=current.body or previous.body,
+        threadReference=current.thread_reference or previous.thread_reference,
+        messageReference=current.message_reference or previous.message_reference,
+        searchQuery=current.search_query or previous.search_query,
+        attachmentUrls=current.attachment_urls or previous.attachment_urls,
+    )
+
+    missing_fields = list(extraction.missing_fields)
+    if extraction.intent in {"gmail_draft", "gmail_send"} and merged_mail.recipients and merged_mail.subject and merged_mail.body:
+        missing_fields = [field for field in missing_fields if field not in {"recipients", "subject", "body"}]
+    if extraction.intent in {"gmail_reply", "gmail_thread_reply"} and merged_mail.body and (
+        merged_mail.thread_reference or merged_mail.message_reference or merged_mail.search_query
+    ):
+        missing_fields = [field for field in missing_fields if field not in {"message", "target"}]
+
+    return extraction.model_copy(
+        update={
+            "mail": merged_mail,
+            "needs_clarification": bool(missing_fields),
+            "missing_fields": missing_fields,
+            "references": extraction.references or [_build_reference_item(previous_extraction, merged_mail.subject)],
+            "metadata": {
+                **dict(extraction.metadata),
+                **_reference_metadata(previous_extraction, merged_mail.subject),
+            },
+        }
+    )
+
+
+def _apply_note_reference_context(
+    extraction: StructuredExtraction,
+    previous_extraction: StructuredExtraction,
+) -> StructuredExtraction:
+    previous = previous_extraction.note
+    if previous is None:
+        return extraction
+
+    current = extraction.note or NoteExtractionPayload()
+    merged_note = NoteExtractionPayload(
+        title=current.title or previous.title,
+        body=current.body or previous.body,
+        folder=current.folder or previous.folder,
+    )
+    missing_fields = list(extraction.missing_fields)
+    if merged_note.title and merged_note.body:
+        missing_fields = [field for field in missing_fields if field not in {"title", "body"}]
+
+    return extraction.model_copy(
+        update={
+            "note": merged_note,
+            "needs_clarification": bool(missing_fields),
+            "missing_fields": missing_fields,
+            "references": extraction.references or [_build_reference_item(previous_extraction, merged_note.title)],
+            "metadata": {
+                **dict(extraction.metadata),
+                **_reference_metadata(previous_extraction, merged_note.title),
+            },
+        }
+    )
+
+
 def _calendar_payload_to_request(payload: CalendarExtractionPayload | None, intent: str) -> dict[str, str] | None:
     if payload is None:
         return None
@@ -498,6 +718,32 @@ def should_route_to_automation(message: str) -> bool:
     return classify_message_intent(message) != "chat"
 
 
+def extract_user_memory_candidates(message: str) -> list[dict[str, str]]:
+    normalized = re.sub(r"\s+", " ", message).strip()
+    lowered = normalized.lower()
+    if len(normalized) < 8:
+        return []
+    if any(secret_hint in lowered for secret_hint in MEMORY_SECRET_HINTS):
+        return []
+    if not any(cue in normalized for cue in MEMORY_CUE_PHRASES):
+        return []
+
+    content = normalized
+    content = re.sub(r"^(?:앞으로|다음부터|항상)\s*", "", content).strip()
+    content = re.sub(r"\s*(?:기억해줘|기억해 둬|기억해|참고해줘|참고해|잊지 마)\s*[.!]?$", "", content).strip()
+    content = content.strip(" .,")
+    if len(content) < 6 or len(content) > 240:
+        return []
+
+    category = "general"
+    if any(hint in normalized for hint in MEMORY_STYLE_HINTS):
+        category = "preference"
+    elif any(hint in normalized for hint in MEMORY_PROFILE_HINTS):
+        category = "profile"
+
+    return [{"category": category, "content": content, "source": "auto"}]
+
+
 def process_message(
     message: str,
     channel: str,
@@ -506,6 +752,7 @@ def process_message(
     intent_override: str | None = None,
     approval_granted: bool = False,
     structured_extraction: StructuredExtraction | None = None,
+    memory_context: list[dict[str, str]] | None = None,
 ) -> dict[str, str | None]:
     extraction = structured_extraction or extract_structured_request(message, channel)
     intent = intent_override or extraction.intent
@@ -514,7 +761,7 @@ def process_message(
         reply = run_n8n_automation(message, channel, session_id, user_id, settings.n8n_webhook_path)
         if reply is not None:
             return {"reply": reply, "route": "n8n", "action_type": None}
-        fallback_reply, _ = generate_local_reply(message, channel)
+        fallback_reply, _ = generate_local_reply(message, channel, memory_context)
         return {"reply": fallback_reply, "route": "n8n_fallback", "action_type": None}
 
     if intent in {"calendar_create", "calendar_update", "calendar_delete"}:
@@ -641,7 +888,7 @@ def process_message(
             "action_type": intent,
         }
 
-    reply, route = generate_local_reply(message, channel)
+    reply, route = generate_local_reply(message, channel, memory_context)
     return {"reply": reply, "route": route, "action_type": None}
 
 

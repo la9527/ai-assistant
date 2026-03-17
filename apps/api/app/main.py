@@ -1,8 +1,10 @@
 import hashlib
 import hmac
+import html
 import json
 import logging
 import re
+import secrets
 import time
 from urllib.parse import parse_qs
 
@@ -15,10 +17,15 @@ from fastapi import FastAPI
 from fastapi import Header
 from fastapi import HTTPException
 from fastapi import Request
+from fastapi import Response
+from fastapi import Cookie
+from fastapi.responses import HTMLResponse
 
 import httpx
 
 from app.automation import classify_message_intent
+from app.automation import apply_reference_context
+from app.automation import extract_user_memory_candidates
 from app.automation import extract_structured_request
 from app.automation import process_message
 from app.config import settings
@@ -31,17 +38,27 @@ from app.models import ApprovalTicket
 from app.models import AssistantSession
 from app.models import TaskRun
 from app.repositories import create_session_message
+from app.repositories import create_user_memory
 from app.repositories import create_approval_ticket
 from app.repositories import create_session
 from app.repositories import create_task_run
+from app.repositories import delete_user_memory
 from app.repositories import get_approval_ticket
+from app.repositories import get_latest_session_for_user
 from app.repositories import get_latest_task_run
+from app.repositories import get_user_memory
 from app.repositories import get_session_by_id
 from app.repositories import get_session_state
 from app.repositories import get_task_run
+from app.repositories import link_user_identity
+from app.repositories import list_user_memories
+from app.repositories import list_user_identities
 from app.repositories import list_session_messages
+from app.repositories import resolve_user_identity
+from app.repositories import search_user_identities
 from app.repositories import update_task_run_status
 from app.repositories import update_approval_ticket_status
+from app.repositories import update_user_memory
 from app.repositories import update_session_message
 from app.repositories import upsert_session_state
 from app.schemas import ApprovalActionRequest
@@ -66,16 +83,26 @@ from app.schemas import SessionMessageResponse
 from app.schemas import SessionStateResponse
 from app.schemas import StructuredExtraction
 from app.schemas import TaskResponse
+from app.schemas import UserIdentityRequest
+from app.schemas import UserIdentityResponse
+from app.schemas import UserMemoryCreateRequest
+from app.schemas import UserMemoryResponse
+from app.schemas import UserMemoryUpdateRequest
 
 
 app = FastAPI(title="AI Assistant API", version="0.1.0")
 
 logger = logging.getLogger("uvicorn.error")
 
+ADMIN_SESSION_COOKIE = "ai_assistant_admin_session"
+ADMIN_SESSION_SECRET = settings.resolved_admin_session_secret
+
 SLACK_CHANNEL_NAME_CACHE: dict[str, str] = {}
 
 APPROVE_PATTERN = re.compile(r"^(승인|approve)\s+([a-zA-Z0-9-]+)$", re.IGNORECASE)
 REJECT_PATTERN = re.compile(r"^(거절|reject)\s+([a-zA-Z0-9-]+)$", re.IGNORECASE)
+IMPLICIT_APPROVE_PATTERN = re.compile(r"^(승인|진행해|진행해줘|진행해 줘|실행해|실행해줘|실행해 줘|좋아|ok|okay)$", re.IGNORECASE)
+IMPLICIT_REJECT_PATTERN = re.compile(r"^(거절|취소|취소해|취소해줘|취소해 줘|중단|그만)$", re.IGNORECASE)
 KAKAO_BASIC_CARD_DESCRIPTION_LIMIT = 230
 KAKAO_SIMPLE_TEXT_LIMIT = 1000
 KAKAO_BASIC_CARD_THUMBNAIL_URL = "https://dummyimage.com/640x360/0f172a/ffffff.png&text=AI+Assistant"
@@ -322,7 +349,437 @@ def _resolve_kakao_session(
         session = get_session_by_id(db, session_id)
         if session is not None:
             return update_session_message(db, session, utterance)
+    if user_id:
+        session = get_latest_session_for_user(db, user_id)
+        if session is not None:
+            return update_session_message(db, session, utterance)
     return create_session(db, channel="kakao", user_id=user_id, message=utterance)
+
+
+def _resolve_internal_user_id(
+    db: Session,
+    channel: str,
+    external_user_id: str | None,
+    display_name: str | None = None,
+) -> str | None:
+    if not external_user_id:
+        return None
+    identity = resolve_user_identity(db, channel, external_user_id, display_name)
+    return identity.internal_user_id
+
+
+def _resolve_channel_session(
+    db: Session,
+    channel: str,
+    session_id: str | None,
+    internal_user_id: str | None,
+    message: str,
+) -> AssistantSession:
+    if session_id:
+        session = get_session_by_id(db, session_id)
+        if session is not None:
+            return update_session_message(db, session, message)
+    if internal_user_id:
+        session = get_latest_session_for_user(db, internal_user_id)
+        if session is not None:
+            return update_session_message(db, session, message)
+    return create_session(db, channel=channel, user_id=internal_user_id, message=message)
+
+
+def _user_identity_response(identity) -> UserIdentityResponse:
+    return UserIdentityResponse(
+        identityId=identity.id,
+        internalUserId=identity.internal_user_id,
+        channel=identity.channel,
+        externalUserId=identity.external_user_id,
+        displayName=identity.display_name,
+        createdAt=identity.created_at,
+        updatedAt=identity.updated_at,
+    )
+
+
+def _user_memory_response(memory) -> UserMemoryResponse:
+    return UserMemoryResponse(
+        memoryId=memory.id,
+        internalUserId=memory.internal_user_id,
+        category=memory.category,
+        content=memory.content,
+        source=memory.source,
+        memoryMeta=memory.memory_meta,
+        createdAt=memory.created_at,
+        updatedAt=memory.updated_at,
+    )
+
+
+def _load_user_memory_context(db: Session, internal_user_id: str | None, limit: int = 6) -> list[dict[str, str]]:
+    if not internal_user_id:
+        return []
+    memories = list_user_memories(db, internal_user_id, limit=limit)
+    return [
+        {
+            "category": memory.category,
+            "content": memory.content,
+            "source": memory.source,
+        }
+        for memory in memories
+    ]
+
+
+def _persist_automatic_user_memories(db: Session, internal_user_id: str | None, message: str) -> None:
+    if not internal_user_id:
+        return
+    existing_memories = list_user_memories(db, internal_user_id, limit=20)
+    existing_pairs = {(item.category, item.content.strip()) for item in existing_memories if item.content}
+    for candidate in extract_user_memory_candidates(message):
+        key = (candidate["category"], candidate["content"].strip())
+        if key in existing_pairs:
+            continue
+        create_user_memory(
+            db,
+            internal_user_id,
+            candidate["category"],
+            candidate["content"],
+            source=candidate["source"],
+            memory_meta={"captured_from": "message_rule"},
+        )
+        existing_pairs.add(key)
+
+
+def _admin_auth_enabled() -> bool:
+    return settings.admin_auth_enabled
+
+
+def _build_admin_session_token() -> str:
+    issued_at = int(time.time())
+    expires_at = issued_at + max(300, settings.admin_session_ttl_seconds)
+    nonce = secrets.token_urlsafe(16)
+    payload = f"{issued_at}:{expires_at}:{nonce}"
+    signature = hmac.new(ADMIN_SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{payload}:{signature}"
+
+
+def _is_admin_session_valid(token: str | None) -> bool:
+    if not _admin_auth_enabled():
+        return True
+    if not token:
+        return False
+    try:
+        issued_at_str, expires_at_str, nonce, signature = token.split(":", 3)
+        payload = f"{issued_at_str}:{expires_at_str}:{nonce}"
+        expected_signature = hmac.new(
+            ADMIN_SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected_signature):
+            return False
+        if int(expires_at_str) < int(time.time()):
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _is_admin_login_valid(username: str, password: str) -> bool:
+    if not _admin_auth_enabled():
+        return True
+    return hmac.compare_digest(username, settings.admin_username) and hmac.compare_digest(password, settings.admin_password)
+
+
+def _require_admin_access(
+    admin_session: str | None = Cookie(default=None, alias=ADMIN_SESSION_COOKIE),
+) -> None:
+    if _is_admin_session_valid(admin_session):
+        return
+    raise HTTPException(status_code=401, detail="admin login required")
+
+
+def _render_admin_login_page(error_message: str | None = None) -> str:
+    error_html = f'<p style="color:#b91c1c;">{html.escape(error_message)}</p>' if error_message else ""
+    return """<!doctype html>
+<html lang=\"ko\">
+<head>
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <title>AI Assistant Admin Login</title>
+  <style>
+    body { margin:0; min-height:100vh; display:grid; place-items:center; background:linear-gradient(160deg,#fff7ed,#f3efe6 55%,#efe7db); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:#1f2937; }
+        form { width:min(420px, calc(100vw - 32px)); background:#fffdf8; border:1px solid #d6cfc2; border-radius:20px; padding:24px; box-shadow:0 14px 40px rgba(120,53,15,.12); }
+    h1 { margin:0 0 12px; font-size:22px; }
+    p { margin:0 0 14px; color:#6b7280; }
+    input { width:100%; box-sizing:border-box; padding:12px 14px; border:1px solid #d6cfc2; border-radius:12px; }
+    button { margin-top:12px; width:100%; padding:12px 14px; border:0; border-radius:999px; background:#9a3412; color:#fff; font:inherit; cursor:pointer; }
+  </style>
+</head>
+<body>
+    <form id=\"admin-login-form\">
+        <h1>관리자 로그인</h1>
+        <p>`ADMIN_USERNAME`, `ADMIN_PASSWORD` 가 설정된 환경입니다. 로그인하면 서버가 관리자 세션 토큰을 자동 발급합니다.</p>
+        __ERROR_HTML__
+        <input type=\"text\" id=\"username\" placeholder=\"admin id\" autofocus />
+        <input type=\"password\" id=\"password\" placeholder=\"password\" style=\"margin-top:12px;\" />
+        <button type=\"submit\">로그인</button>
+  </form>
+    <script>
+        document.getElementById('admin-login-form').addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const response = await fetch('/assistant/api/admin/session', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({
+                    username: document.getElementById('username').value,
+                    password: document.getElementById('password').value,
+                }),
+            });
+            if (!response.ok) {
+                const body = await response.json().catch(() => ({}));
+                alert(body.detail || '로그인에 실패했습니다.');
+                return;
+            }
+            window.location.href = '/assistant/api/admin/users';
+        });
+    </script>
+</body>
+</html>""".replace("__ERROR_HTML__", error_html)
+
+
+def _render_admin_users_page() -> str:
+    return f"""<!doctype html>
+<html lang=\"ko\">
+<head>
+    <meta charset=\"utf-8\" />
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+    <title>AI Assistant Admin</title>
+    <style>
+        :root {{ color-scheme: light; --bg:#f3efe6; --panel:#fffdf8; --ink:#1f2937; --muted:#6b7280; --line:#d6cfc2; --accent:#9a3412; --accent-soft:#ffedd5; }}
+        body {{ margin:0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: radial-gradient(circle at top, #fff7ed 0%, var(--bg) 55%, #efe7db 100%); color:var(--ink); }}
+        main {{ max-width:1200px; margin:0 auto; padding:32px 20px 56px; }}
+        h1, h2 {{ margin:0 0 12px; }}
+        p {{ margin:0 0 14px; color:var(--muted); }}
+        .grid {{ display:grid; gap:16px; grid-template-columns: 1.1fr 0.9fr; }}
+        .panel {{ background:var(--panel); border:1px solid var(--line); border-radius:18px; padding:18px; box-shadow: 0 10px 40px rgba(120, 53, 15, 0.08); }}
+        .stack {{ display:grid; gap:12px; }}
+        label {{ display:grid; gap:6px; font-size:13px; color:var(--muted); }}
+        input, textarea, select, button {{ font: inherit; }}
+        input, textarea, select {{ width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid var(--line); border-radius:12px; background:white; color:var(--ink); }}
+        textarea {{ min-height:96px; resize:vertical; }}
+        button {{ border:0; border-radius:999px; padding:10px 14px; background:var(--accent); color:white; cursor:pointer; }}
+        button.secondary {{ background:var(--accent-soft); color:var(--accent); }}
+        table {{ width:100%; border-collapse: collapse; font-size:13px; }}
+        th, td {{ padding:10px 8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }}
+        th {{ color:var(--muted); font-weight:600; }}
+        .row {{ display:flex; gap:8px; flex-wrap:wrap; }}
+        .badge {{ display:inline-block; padding:4px 8px; border-radius:999px; background:var(--accent-soft); color:var(--accent); font-size:12px; }}
+        .muted {{ color:var(--muted); }}
+        .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break:break-all; }}
+        .selected {{ background:#fff7ed; }}
+        @media (max-width: 900px) {{ .grid {{ grid-template-columns: 1fr; }} }}
+    </style>
+</head>
+<body>
+<main>
+    <div class=\"panel\" style=\"margin-bottom:16px\">
+        <h1>사용자 매핑 및 장기 메모리</h1>
+        <p>채널 외부 ID를 공통 내부 사용자 ID로 묶고, 같은 사용자에게 적용되는 장기 메모리를 수동으로 관리합니다.</p>
+        <div class=\"row\"><span class=\"badge\">Tailscale 내부 관리자용</span><span class=\"badge\">FastAPI 내장 UI</span></div>
+    </div>
+    <div class=\"grid\">
+        <section class=\"panel stack\">
+            <div>
+                <h2>Identity 검색</h2>
+                <p>외부 ID 일부나 내부 사용자 ID로 조회한 뒤, 선택한 사용자에게 새 채널 ID를 연결할 수 있습니다.</p>
+            </div>
+            <div class=\"row\">
+                <label style=\"flex:1 1 180px\">channel<input id=\"search-channel\" placeholder=\"slack / kakao / web\" /></label>
+                <label style=\"flex:1 1 220px\">external user<input id=\"search-external\" placeholder=\"U123 / kakao-user-key\" /></label>
+                <label style=\"flex:1 1 220px\">internal user<input id=\"search-internal\" placeholder=\"uuid\" /></label>
+            </div>
+            <div class=\"row\">
+                <button id=\"search-button\">조회</button>
+                <button id=\"recent-button\" class=\"secondary\">최근 항목</button>
+            </div>
+            <div id=\"search-status\" class=\"muted\"></div>
+            <table>
+                <thead><tr><th>internal</th><th>channel</th><th>external</th><th>display</th><th></th></tr></thead>
+                <tbody id=\"identity-results\"></tbody>
+            </table>
+        </section>
+        <section class=\"panel stack\">
+            <div>
+                <h2>선택된 사용자</h2>
+                <p id=\"selected-user\" class=\"mono muted\">선택된 내부 사용자 없음</p>
+            </div>
+            <div class=\"stack\">
+                <h2>Identity 연결</h2>
+                <label>internal user<input id=\"link-internal\" placeholder=\"선택 시 자동 입력\" /></label>
+                <label>channel<input id=\"link-channel\" placeholder=\"slack / kakao / web\" /></label>
+                <label>external user<input id=\"link-external\" /></label>
+                <label>display name<input id=\"link-display\" /></label>
+                <div class=\"row\">
+                    <button id=\"link-button\">연결 저장</button>
+                    <button id=\"resolve-button\" class=\"secondary\">단독 resolve</button>
+                </div>
+            </div>
+            <div id=\"identity-list\" class=\"stack\"></div>
+        </section>
+    </div>
+    <div class=\"grid\" style=\"margin-top:16px\">
+        <section class=\"panel stack\">
+            <div>
+                <h2>장기 메모리 등록</h2>
+                <p>선택한 내부 사용자에 대해 장기적으로 유지할 사실, 선호, 운영 메모를 저장합니다.</p>
+            </div>
+            <label>internal user<input id=\"memory-internal\" placeholder=\"선택 시 자동 입력\" /></label>
+            <div class=\"row\">
+                <label style=\"flex:1 1 180px\">category<input id=\"memory-category\" value=\"preference\" /></label>
+                <label style=\"flex:1 1 180px\">source<input id=\"memory-source\" value=\"manual\" /></label>
+            </div>
+            <label>content<textarea id=\"memory-content\" placeholder=\"예: 같은 사용자는 일정 요약을 오전 기준으로 짧게 받길 선호함\"></textarea></label>
+            <div class=\"row\"><button id=\"memory-create\">메모 저장</button></div>
+            <div id=\"memory-status\" class=\"muted\"></div>
+        </section>
+        <section class=\"panel stack\">
+            <div>
+                <h2>메모 목록</h2>
+                <p>선택한 내부 사용자에 저장된 최근 장기 메모입니다. 삭제는 즉시 반영됩니다.</p>
+            </div>
+            <div id=\"memory-list\" class=\"stack\"></div>
+        </section>
+    </div>
+</main>
+<script>
+    const apiBase = window.location.pathname.replace(/\\/admin\\/users\\/?$/, '');
+    let selectedInternalUserId = '';
+
+    function esc(value) {{
+        return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+    }}
+
+    function setSelectedUser(internalUserId) {{
+        selectedInternalUserId = internalUserId || '';
+        document.getElementById('selected-user').textContent = selectedInternalUserId || '선택된 내부 사용자 없음';
+        document.getElementById('link-internal').value = selectedInternalUserId;
+        document.getElementById('memory-internal').value = selectedInternalUserId;
+        if (selectedInternalUserId) {{
+            loadIdentityAliases();
+            loadMemories();
+        }} else {{
+            document.getElementById('identity-list').innerHTML = '';
+            document.getElementById('memory-list').innerHTML = '';
+        }}
+    }}
+
+    async function loadIdentityResults(params = '') {{
+        const status = document.getElementById('search-status');
+        status.textContent = '조회 중...';
+        const response = await fetch(`${{apiBase}}/users/identities${{params}}`, {{ credentials: 'include' }});
+        const data = await response.json();
+        const body = document.getElementById('identity-results');
+        body.innerHTML = data.map((item) => `
+            <tr class="${{item.internalUserId === selectedInternalUserId ? 'selected' : ''}}">
+                <td class="mono">${{esc(item.internalUserId)}}</td>
+                <td>${{esc(item.channel)}}</td>
+                <td class="mono">${{esc(item.externalUserId)}}</td>
+                <td>${{esc(item.displayName || '')}}</td>
+                <td><button class="secondary" onclick="setSelectedUser('${{esc(item.internalUserId)}}')">선택</button></td>
+            </tr>
+        `).join('');
+        status.textContent = `조회 결과 ${{data.length}}건`;
+    }}
+
+    async function loadIdentityAliases() {{
+        if (!selectedInternalUserId) return;
+        const response = await fetch(`${{apiBase}}/users/${{encodeURIComponent(selectedInternalUserId)}}/identities`, {{ credentials: 'include' }});
+        const data = await response.json();
+        const el = document.getElementById('identity-list');
+        el.innerHTML = `<div class="muted">연결된 identity ${{data.length}}건</div>` + data.map((item) => `
+            <div class="panel" style="padding:12px; border-radius:14px; box-shadow:none;">
+                <div class="row"><span class="badge">${{esc(item.channel)}}</span><span class="mono">${{esc(item.externalUserId)}}</span></div>
+                <div>${{esc(item.displayName || '')}}</div>
+            </div>
+        `).join('');
+    }}
+
+    async function loadMemories() {{
+        if (!selectedInternalUserId) return;
+        const response = await fetch(`${{apiBase}}/users/${{encodeURIComponent(selectedInternalUserId)}}/memories`, {{ credentials: 'include' }});
+        const data = await response.json();
+        const el = document.getElementById('memory-list');
+        el.innerHTML = data.length ? data.map((item) => `
+            <div class="panel" style="padding:12px; border-radius:14px; box-shadow:none;">
+                <div class="row"><span class="badge">${{esc(item.category)}}</span><span class="badge">${{esc(item.source)}}</span></div>
+                <div style="white-space:pre-wrap">${{esc(item.content)}}</div>
+                <div class="row" style="margin-top:8px"><button class="secondary" onclick="deleteMemory('${{esc(item.memoryId)}}')">삭제</button></div>
+            </div>
+        `).join('') : '<div class="muted">저장된 메모가 없습니다.</div>';
+    }}
+
+    async function deleteMemory(memoryId) {{
+        await fetch(`${{apiBase}}/users/memories/${{encodeURIComponent(memoryId)}}`, {{ method: 'DELETE', credentials: 'include' }});
+        await loadMemories();
+    }}
+
+    async function submitLink(resolveOnly) {{
+        const payload = {{
+            internalUserId: document.getElementById('link-internal').value || null,
+            channel: document.getElementById('link-channel').value,
+            externalUserId: document.getElementById('link-external').value,
+            displayName: document.getElementById('link-display').value || null,
+        }};
+        const endpoint = resolveOnly ? 'resolve' : 'link';
+        const response = await fetch(`${{apiBase}}/users/identities/${{endpoint}}`, {{
+            method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, credentials: 'include', body: JSON.stringify(payload)
+        }});
+        if (!response.ok) {{
+            alert(await response.text());
+            return;
+        }}
+        const data = await response.json();
+        setSelectedUser(data.internalUserId);
+        await loadIdentityResults('?limit=50');
+    }}
+
+    async function createMemory() {{
+        const internalUserId = document.getElementById('memory-internal').value;
+        if (!internalUserId) {{
+            alert('먼저 내부 사용자를 선택하거나 입력하세요.');
+            return;
+        }}
+        const payload = {{
+            category: document.getElementById('memory-category').value || 'general',
+            source: document.getElementById('memory-source').value || 'manual',
+            content: document.getElementById('memory-content').value,
+        }};
+        const response = await fetch(`${{apiBase}}/users/${{encodeURIComponent(internalUserId)}}/memories`, {{
+            method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, credentials: 'include', body: JSON.stringify(payload)
+        }});
+        if (!response.ok) {{
+            alert(await response.text());
+            return;
+        }}
+        document.getElementById('memory-content').value = '';
+        document.getElementById('memory-status').textContent = '메모를 저장했습니다.';
+        setSelectedUser(internalUserId);
+    }}
+
+    document.getElementById('search-button').addEventListener('click', async () => {{
+        const channel = document.getElementById('search-channel').value;
+        const external = document.getElementById('search-external').value;
+        const internal = document.getElementById('search-internal').value;
+        const params = new URLSearchParams();
+        if (channel) params.set('channel', channel);
+        if (external) params.set('external_user_id', external);
+        if (internal) params.set('internal_user_id', internal);
+        params.set('limit', '50');
+        await loadIdentityResults(`?${{params.toString()}}`);
+    }});
+    document.getElementById('recent-button').addEventListener('click', () => loadIdentityResults('?limit=50'));
+    document.getElementById('link-button').addEventListener('click', () => submitLink(false));
+    document.getElementById('resolve-button').addEventListener('click', () => submitLink(true));
+    document.getElementById('memory-create').addEventListener('click', createMemory);
+    loadIdentityResults('?limit=50');
+</script>
+</body>
+</html>"""
 
 
 def _session_history_context(db: Session, session_id: str, limit: int = 8) -> list[dict[str, str]]:
@@ -341,8 +798,33 @@ def _build_structured_payload(
     message: str,
     channel: str,
     history: list[dict[str, str]] | None = None,
+    previous_extraction: StructuredExtraction | None = None,
 ) -> StructuredExtraction:
-    return extract_structured_request(message, channel, history)
+    extraction = extract_structured_request(message, channel, history)
+    return apply_reference_context(extraction, previous_extraction)
+
+
+def _load_previous_extraction(db: Session, session_id: str) -> StructuredExtraction | None:
+    state = get_session_state(db, session_id)
+    if state is None or state.last_extraction is None:
+        return None
+    try:
+        return StructuredExtraction.model_validate(state.last_extraction)
+    except Exception:
+        logger.warning("Failed to validate last extraction for session_id=%s", session_id)
+        return None
+
+
+def _match_pending_ticket_command(db: Session, session_id: str, message: str) -> tuple[str, str] | None:
+    state = get_session_state(db, session_id)
+    if state is None or not state.pending_ticket_id:
+        return None
+    normalized = message.strip()
+    if IMPLICIT_APPROVE_PATTERN.match(normalized):
+        return "approve", state.pending_ticket_id
+    if IMPLICIT_REJECT_PATTERN.match(normalized):
+        return "reject", state.pending_ticket_id
+    return None
 
 
 def _record_user_message(
@@ -367,6 +849,7 @@ def _record_user_message(
             session_id=session.id,
             last_intent=structured.intent,
             last_extraction=structured_payload,
+            last_candidates=[item.model_dump(by_alias=True, exclude_none=True) for item in structured.references] or [],
             state_data={"last_user_message": message},
         )
     else:
@@ -375,6 +858,7 @@ def _record_user_message(
             session_id=session.id,
             state_data={"last_user_message": message},
         )
+    _persist_automatic_user_memories(db, session.user_id, message)
     return structured_payload or {}
 
 
@@ -418,19 +902,31 @@ def _process_kakao_message(
     user_id: str | None,
     session_id: str | None = None,
 ) -> tuple[str, str, str, str | None, str | None]:
+    internal_user_id = _resolve_internal_user_id(db, "kakao", user_id)
     approval_command = _match_approval_command(utterance)
     if approval_command is not None:
-        return _handle_approval_command(approval_command, user_id, db)
+        return _handle_approval_command(approval_command, internal_user_id, db)
 
-    session = _resolve_kakao_session(db, session_id, user_id, utterance)
-    structured = _build_structured_payload(utterance, "kakao", _session_history_context(db, session.id))
+    session = _resolve_channel_session(db, "kakao", session_id, internal_user_id, utterance)
+    pending_command = _match_pending_ticket_command(db, session.id, utterance)
+    if pending_command is not None:
+        return _handle_approval_command(pending_command, internal_user_id, db)
+
+    structured = _build_structured_payload(
+        utterance,
+        "kakao",
+        _session_history_context(db, session.id),
+        _load_previous_extraction(db, session.id),
+    )
+    memory_context = _load_user_memory_context(db, internal_user_id)
     _record_user_message(db, session, "kakao", utterance, structured)
     result = process_message(
         utterance,
         "kakao",
         session.id,
-        user_id,
+        internal_user_id,
         structured_extraction=structured,
+        memory_context=memory_context,
     )
     approval_ticket_id = None
     action_type = str(result["action_type"]) if result["action_type"] else None
@@ -461,7 +957,8 @@ def _resolve_kakao_callback_session_id(db: Session, utterance: str, user_id: str
         if ticket is not None and ticket.session_id:
             return ticket.session_id
         return "unknown"
-    session = _resolve_kakao_session(db, None, user_id, utterance)
+    internal_user_id = _resolve_internal_user_id(db, "kakao", user_id)
+    session = _resolve_channel_session(db, "kakao", None, internal_user_id, utterance)
     return session.id
 
 
@@ -537,6 +1034,8 @@ def _process_kakao_callback(
 @app.on_event("startup")
 def startup() -> None:
     Base.metadata.create_all(bind=engine)
+    if _admin_auth_enabled() and not settings.admin_session_secret:
+        logger.warning("ADMIN_SESSION_SECRET is not set; using an ephemeral in-memory secret for admin sessions")
     warm_local_llm()
 
 
@@ -557,11 +1056,184 @@ def health(db: Session = Depends(get_db)) -> HealthResponse:
     )
 
 
+@app.get("/api/admin/users", response_class=HTMLResponse)
+def admin_users_page(admin_session: str | None = Cookie(default=None, alias=ADMIN_SESSION_COOKIE)) -> HTMLResponse:
+    if not _is_admin_session_valid(admin_session):
+        return HTMLResponse(_render_admin_login_page(), status_code=401)
+    return HTMLResponse(_render_admin_users_page())
+
+
+@app.post("/api/admin/session")
+async def create_admin_session(request: Request) -> Response:
+    if not _admin_auth_enabled():
+        response = Response(status_code=204)
+        response.set_cookie(
+            ADMIN_SESSION_COOKIE,
+            value=_build_admin_session_token(),
+            max_age=max(300, settings.admin_session_ttl_seconds),
+            httponly=True,
+            samesite="lax",
+            secure=False,
+            path="/",
+        )
+        return response
+
+    payload = await request.json()
+    username = str(payload.get("username") or "")
+    password = str(payload.get("password") or "")
+    if not _is_admin_login_valid(username, password):
+        raise HTTPException(status_code=401, detail="invalid admin credentials")
+
+    response = Response(status_code=204)
+    response.set_cookie(
+        ADMIN_SESSION_COOKIE,
+        value=_build_admin_session_token(),
+        max_age=max(300, settings.admin_session_ttl_seconds),
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        path="/",
+    )
+    return response
+
+
+@app.delete("/api/admin/session", status_code=204)
+def delete_admin_session() -> Response:
+    response = Response(status_code=204)
+    response.delete_cookie(ADMIN_SESSION_COOKIE, path="/")
+    return response
+
+
+@app.get("/api/users/identities", response_model=list[UserIdentityResponse])
+def search_user_identities_api(
+    channel: str | None = None,
+    external_user_id: str | None = None,
+    internal_user_id: str | None = None,
+    limit: int = 50,
+    _: None = Depends(_require_admin_access),
+    db: Session = Depends(get_db),
+) -> list[UserIdentityResponse]:
+    identities = search_user_identities(
+        db,
+        channel=channel,
+        external_user_id=external_user_id,
+        internal_user_id=internal_user_id,
+        limit=max(1, min(limit, 200)),
+    )
+    return [_user_identity_response(identity) for identity in identities]
+
+
+@app.post("/api/users/identities/resolve", response_model=UserIdentityResponse)
+def resolve_user_identity_api(
+    payload: UserIdentityRequest,
+    _: None = Depends(_require_admin_access),
+    db: Session = Depends(get_db),
+) -> UserIdentityResponse:
+    identity = resolve_user_identity(db, payload.channel, payload.external_user_id, payload.display_name)
+    return _user_identity_response(identity)
+
+
+@app.post("/api/users/identities/link", response_model=UserIdentityResponse)
+def link_user_identity_api(
+    payload: UserIdentityRequest,
+    _: None = Depends(_require_admin_access),
+    db: Session = Depends(get_db),
+) -> UserIdentityResponse:
+    if not payload.internal_user_id:
+        raise HTTPException(status_code=400, detail="internalUserId is required")
+    identity = link_user_identity(
+        db,
+        payload.internal_user_id,
+        payload.channel,
+        payload.external_user_id,
+        payload.display_name,
+    )
+    return _user_identity_response(identity)
+
+
+@app.get("/api/users/{internal_user_id}/identities", response_model=list[UserIdentityResponse])
+def get_user_identities_api(
+    internal_user_id: str,
+    _: None = Depends(_require_admin_access),
+    db: Session = Depends(get_db),
+) -> list[UserIdentityResponse]:
+    return [_user_identity_response(identity) for identity in list_user_identities(db, internal_user_id)]
+
+
+@app.get("/api/users/{internal_user_id}/memories", response_model=list[UserMemoryResponse])
+def get_user_memories_api(
+    internal_user_id: str,
+    category: str | None = None,
+    limit: int = 20,
+    _: None = Depends(_require_admin_access),
+    db: Session = Depends(get_db),
+) -> list[UserMemoryResponse]:
+    memories = list_user_memories(db, internal_user_id, category=category, limit=max(1, min(limit, 100)))
+    return [_user_memory_response(memory) for memory in memories]
+
+
+@app.post("/api/users/{internal_user_id}/memories", response_model=UserMemoryResponse)
+def create_user_memory_api(
+    internal_user_id: str,
+    payload: UserMemoryCreateRequest,
+    _: None = Depends(_require_admin_access),
+    db: Session = Depends(get_db),
+) -> UserMemoryResponse:
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content is required")
+    memory = create_user_memory(
+        db,
+        internal_user_id,
+        payload.category.strip() or "general",
+        content,
+        source=payload.source.strip() or "manual",
+        memory_meta=payload.memory_meta,
+    )
+    return _user_memory_response(memory)
+
+
+@app.patch("/api/users/memories/{memory_id}", response_model=UserMemoryResponse)
+def update_user_memory_api(
+    memory_id: str,
+    payload: UserMemoryUpdateRequest,
+    _: None = Depends(_require_admin_access),
+    db: Session = Depends(get_db),
+) -> UserMemoryResponse:
+    memory = get_user_memory(db, memory_id)
+    if memory is None:
+        raise HTTPException(status_code=404, detail="memory not found")
+    memory = update_user_memory(
+        db,
+        memory,
+        category=payload.category if payload.category is not None else _UNSET,
+        content=payload.content.strip() if payload.content is not None else _UNSET,
+        source=payload.source if payload.source is not None else _UNSET,
+        memory_meta=payload.memory_meta if payload.memory_meta is not None else _UNSET,
+    )
+    return _user_memory_response(memory)
+
+
+@app.delete("/api/users/memories/{memory_id}", status_code=204)
+def delete_user_memory_api(
+    memory_id: str,
+    _: None = Depends(_require_admin_access),
+    db: Session = Depends(get_db),
+) -> Response:
+    memory = get_user_memory(db, memory_id)
+    if memory is None:
+        raise HTTPException(status_code=404, detail="memory not found")
+    delete_user_memory(db, memory)
+    return Response(status_code=204)
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(payload: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
+    internal_user_id = _resolve_internal_user_id(db, payload.channel, payload.user_id)
+    memory_context = _load_user_memory_context(db, internal_user_id)
     approval_command = _match_approval_command(payload.message)
     if approval_command is not None:
-        session_id, reply, route, approval_ticket_id, _ = _handle_approval_command(approval_command, None, db)
+        session_id, reply, route, approval_ticket_id, _ = _handle_approval_command(approval_command, internal_user_id, db)
         return ChatResponse(
             reply=reply,
             route=route,
@@ -571,16 +1243,36 @@ def chat(payload: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
             approval_ticket_id=approval_ticket_id,
         )
 
-    session = get_session_by_id(db, payload.session_id) if payload.session_id else None
-    if session is None:
-        session = create_session(db, channel=payload.channel, user_id=None, message=payload.message)
-    else:
-        session = update_session_message(db, session, payload.message)
+    session = _resolve_channel_session(db, payload.channel, payload.session_id, internal_user_id, payload.message)
 
-    structured = _build_structured_payload(payload.message, payload.channel, _session_history_context(db, session.id))
+    pending_command = _match_pending_ticket_command(db, session.id, payload.message)
+    if pending_command is not None:
+        session_id, reply, route, approval_ticket_id, _ = _handle_approval_command(pending_command, internal_user_id, db)
+        return ChatResponse(
+            reply=reply,
+            route=route,
+            local_llm_provider=settings.local_llm.provider,
+            model=settings.local_llm.model,
+            session_id=session_id,
+            approval_ticket_id=approval_ticket_id,
+        )
+
+    structured = _build_structured_payload(
+        payload.message,
+        payload.channel,
+        _session_history_context(db, session.id),
+        _load_previous_extraction(db, session.id),
+    )
     _record_user_message(db, session, payload.channel, payload.message, structured)
 
-    result = process_message(payload.message, payload.channel, session.id, structured_extraction=structured)
+    result = process_message(
+        payload.message,
+        payload.channel,
+        session.id,
+        internal_user_id,
+        structured_extraction=structured,
+        memory_context=memory_context,
+    )
     approval_ticket_id = None
     if result["route"] == "approval_required" and result["action_type"]:
         ticket = create_approval_ticket(db, session_id=session.id, action_type=str(result["action_type"]))
@@ -617,11 +1309,8 @@ def chat(payload: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
 
 @app.post("/api/browser/read", response_model=BrowserReadResponse)
 async def browser_read(payload: BrowserReadRequest, db: Session = Depends(get_db)) -> BrowserReadResponse:
-    session = get_session_by_id(db, payload.session_id) if payload.session_id else None
-    if session is None:
-        session = create_session(db, channel=payload.channel, user_id=None, message=payload.url)
-    else:
-        session = update_session_message(db, session, payload.url)
+    internal_user_id = _resolve_internal_user_id(db, payload.channel, payload.user_id)
+    session = _resolve_channel_session(db, payload.channel, payload.session_id, internal_user_id, payload.url)
 
     task = create_task_run(
         db,
@@ -851,6 +1540,16 @@ def approve_action(payload: ApprovalActionRequest, db: Session = Depends(get_db)
         raise HTTPException(status_code=404, detail="approval ticket not found")
     ticket = update_approval_ticket_status(db, ticket, status="approved", actor_id=payload.actor_id)
     execution_reply, route = _execute_pending_ticket(ticket, db)
+    if ticket.session_id:
+        _record_assistant_message(
+            db,
+            ticket.session_id,
+            "system",
+            execution_reply or "승인 처리했습니다.",
+            route or "approved",
+            ticket.action_type,
+            ticket.id,
+        )
     return ApprovalTicketResponse(
         ticket_id=ticket.id,
         session_id=ticket.session_id,
@@ -873,6 +1572,8 @@ def reject_action(payload: ApprovalActionRequest, db: Session = Depends(get_db))
     pending_task = get_latest_task_run(db, ticket.session_id, task_type=ticket.action_type, status="pending_approval")
     if pending_task is not None:
         update_task_run_status(db, pending_task, status="rejected")
+    if ticket.session_id:
+        _record_assistant_message(db, ticket.session_id, "system", "승인 요청을 거절했습니다.", "rejected", ticket.action_type, ticket.id)
     return ApprovalTicketResponse(
         ticket_id=ticket.id,
         session_id=ticket.session_id,
@@ -1052,11 +1753,13 @@ def _execute_pending_ticket(ticket: ApprovalTicket, db: Session) -> tuple[str | 
         session.user_id,
         intent_override=ticket.action_type,
         approval_granted=True,
-        structured_extraction=extract_structured_request(
+        structured_extraction=_build_structured_payload(
             pending_task.detail,
             session.channel,
             _session_history_context(db, session.id),
+            _load_previous_extraction(db, session.id),
         ),
+        memory_context=_load_user_memory_context(db, session.user_id),
     )
     update_task_run_status(db, pending_task, status="completed", detail=pending_task.detail)
     return str(result["reply"]), str(result["route"])
@@ -1068,11 +1771,7 @@ def _resolve_slack_session(
     user_id: str | None,
     message: str,
 ) -> AssistantSession:
-    if session_id:
-        session = get_session_by_id(db, session_id)
-        if session is not None:
-            return update_session_message(db, session, message)
-    return create_session(db, channel="slack", user_id=user_id, message=message)
+    return _resolve_channel_session(db, "slack", session_id, user_id, message)
 
 
 def _process_slack_message(
@@ -1081,14 +1780,32 @@ def _process_slack_message(
     user_id: str | None,
     session_id: str | None = None,
 ) -> tuple[str, str, str, str | None, str | None]:
+    internal_user_id = _resolve_internal_user_id(db, "slack", user_id)
     approval_command = _match_approval_command(message)
     if approval_command is not None:
-        return _handle_approval_command(approval_command, user_id, db)
+        return _handle_approval_command(approval_command, internal_user_id, db)
 
-    session = _resolve_slack_session(db, session_id, user_id, message)
-    structured = _build_structured_payload(message, "slack", _session_history_context(db, session.id))
+    session = _resolve_slack_session(db, session_id, internal_user_id, message)
+    pending_command = _match_pending_ticket_command(db, session.id, message)
+    if pending_command is not None:
+        return _handle_approval_command(pending_command, internal_user_id, db)
+
+    structured = _build_structured_payload(
+        message,
+        "slack",
+        _session_history_context(db, session.id),
+        _load_previous_extraction(db, session.id),
+    )
+    memory_context = _load_user_memory_context(db, internal_user_id)
     _record_user_message(db, session, "slack", message, structured)
-    result = process_message(message, "slack", session.id, user_id, structured_extraction=structured)
+    result = process_message(
+        message,
+        "slack",
+        session.id,
+        internal_user_id,
+        structured_extraction=structured,
+        memory_context=memory_context,
+    )
     approval_ticket_id = None
     action_type = str(result["action_type"]) if result["action_type"] else None
     if result["route"] == "approval_required" and result["action_type"]:
@@ -1118,7 +1835,8 @@ def _resolve_slack_event_session_id(db: Session, message: str, user_id: str | No
         if ticket is not None and ticket.session_id:
             return ticket.session_id
         return "unknown"
-    session = _resolve_slack_session(db, None, user_id, message)
+    internal_user_id = _resolve_internal_user_id(db, "slack", user_id)
+    session = _resolve_slack_session(db, None, internal_user_id, message)
     return session.id
 
 

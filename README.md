@@ -136,6 +136,7 @@ Kakao 채널을 추가한다.
 - [docs/mlx-operations.md](docs/mlx-operations.md)
 - [docs/service-operations.md](docs/service-operations.md)
 - [docs/slack-integration.md](docs/slack-integration.md)
+- [docs/user-identity-memory-guide.md](docs/user-identity-memory-guide.md)
 
 ## 현재 검증된 자동화 범위
 
@@ -156,6 +157,12 @@ Kakao 채널을 추가한다.
 - session별 message history 저장 테이블과 state 저장 테이블을 추가했다.
 - `POST /assistant/api/chat`, Slack, Kakao 처리 시 사용자 원문, assistant 응답, 승인 관련 상태를 함께 적재한다.
 - `GET /assistant/api/sessions/{session_id}/messages`, `GET /assistant/api/sessions/{session_id}/state` 로 최근 문맥과 상태를 조회할 수 있다.
+- `user_identities` 저장 구조를 추가해 Slack, Kakao, Web 외부 사용자 ID를 공통 내부 사용자 ID로 연결할 수 있다.
+- `POST /assistant/api/users/identities/resolve`, `POST /assistant/api/users/identities/link`, `GET /assistant/api/users/{internal_user_id}/identities` 로 채널 사용자 매핑을 조회하고 연결할 수 있다.
+- `user_memories` 저장 구조와 `GET/POST/PATCH/DELETE /assistant/api/users/.../memories` API를 추가해 내부 사용자별 장기 메모리를 저장하고 갱신할 수 있다.
+- 관리자 점검용으로 `GET /assistant/api/admin/users` 경로에 사용자 매핑과 장기 메모리를 함께 보는 내장 관리 페이지를 추가했다.
+- `.env` 에 `ADMIN_USERNAME`, `ADMIN_PASSWORD` 를 비워 두면 개인 운영 기준으로 관리자 페이지에 바로 진입할 수 있고, 둘 다 설정하면 ID/PASS 로그인 후 서버가 자동 발급한 세션 cookie 기준으로 보호된다.
+- 장기 메모리는 명시적 표현인 `기억해줘`, `앞으로`, `다음부터`, `항상`, `참고해` 등을 포함한 사용자 문장에서만 자동 후보를 추출해 `source=auto` 로 적재한다.
 - `calendar_delete`, `gmail_reply`, `gmail_thread_reply` 는 recent history와 baseline extraction을 함께 local LLM에 보내 JSON extraction을 먼저 시도하고, 실패 시 기존 parser로 fallback 한다.
 - 현재 기본 운영안은 host MLX server의 `lmstudio-community/LFM2-24B-A2B-MLX-4bit` 단일 모델로 일반 답변과 구조화 추출을 함께 처리하는 방식이다.
 - 현재 MLX structured extraction 대상은 `calendar_create`, `calendar_update`, `calendar_delete`, `gmail_draft`, `gmail_send`, `gmail_reply`, `gmail_thread_reply` 이다.
@@ -171,9 +178,9 @@ Kakao 채널을 추가한다.
 ## 현재 접근 경로
 
 - Kakao 공개 webhook URL은 Cloudflare Tunnel 뒤의 `https://<kakao-host>/assistant/api/kakao/webhook` 형태를 사용한다.
-- Open WebUI 운영 접근은 Tailscale 호스트명 기준 `http://<tailscale-host>/`를 사용한다.
+- Open WebUI 운영 접근은 Tailscale Serve 기준 `https://<tailscale-host>/`를 사용한다.
 - n8n 운영 접근은 Tailscale 호스트명 기준 `http://<tailscale-host>:5678`를 사용한다.
-- Guacamole 운영 접근은 선택 프로필 활성화 후 Tailscale 호스트명 기준 `http://<tailscale-host>/guacamole/`를 사용한다.
+- Guacamole 운영 접근은 선택 프로필 활성화 후 Tailscale Serve 기준 `https://<tailscale-host>/guacamole/`를 사용한다.
 - SSH는 Tailscale 네트워크 위의 일반 SSH만 사용하고, macOS `Remote Login`을 켠 뒤 `ssh <mac-user>@<tailscale-host>` 형식으로 접속한다.
 
 ## 현재 남은 우선순위
@@ -182,8 +189,8 @@ Kakao 채널을 추가한다.
 2. Kakao 운영 채널의 callbackUrl 누락 여부와 OpenBuilder 블록 설정 차이를 다시 점검
 3. Playwright 기반 브라우저 자동화 read-only 경로를 실사용 기준으로 다듬고 승인 필요 시나리오로 확장
 4. AppleScript 기반 macOS 자동화 승인 시나리오를 실사용 기준으로 다듬고 추가 앱으로 확장
-5. LangGraph 상태 라우팅과 승인 후 재개 구조 도입
-6. 채널 통합 사용자 매핑과 장기 메모리 계층 추가
+5. LangGraph 상태 라우팅과 승인 후 재개 구조 고도화
+6. 장기 메모리 계층과 후보 선택형 후속 참조 해석 추가
 7. 백업, 복구, 재기동 절차의 실제 검증과 문서화
 
 브라우저 자동화는 선택 프로필 서비스 `browser-runner`를 통해 분리한다. 현재는 `POST /assistant/api/browser/read`로 대상 URL의 제목, 설명, 주요 heading, 본문 일부를 read-only 방식으로 추출할 수 있다.

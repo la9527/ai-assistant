@@ -1,6 +1,9 @@
 import unittest
 
 from app.automation import _calendar_payload_to_request
+from app.automation import apply_reference_context
+from app.automation import extract_user_memory_candidates
+from app.llm import _build_local_reply_messages
 from app.automation import _mail_payload_to_compose_request
 from app.automation import _mail_payload_to_reply_request
 from app.automation import _merge_mail_payload
@@ -10,6 +13,7 @@ from app.automation import parse_gmail_compose_request
 from app.automation import parse_gmail_reply_request
 from app.schemas import CalendarExtractionPayload
 from app.schemas import MailExtractionPayload
+from app.schemas import StructuredExtraction
 
 
 class GmailReplyNormalizationTests(unittest.TestCase):
@@ -148,6 +152,117 @@ class CalendarAndComposeExtractionTests(unittest.TestCase):
                 "attachment_url": "https://example.com/file.txt",
             },
         )
+
+    def test_apply_reference_context_reuses_previous_calendar_delete_target(self) -> None:
+        previous = StructuredExtraction(
+            rawMessage="오늘 06:00-07:00 피자 시키기 일정 삭제해줘",
+            normalizedMessage="오늘 06:00-07:00 피자 시키기 일정 삭제해줘",
+            channel="web",
+            domain="calendar",
+            action="delete",
+            intent="calendar_delete",
+            needsClarification=False,
+            approvalRequired=True,
+            calendar=CalendarExtractionPayload(
+                searchTitle="피자 시키기",
+                searchTimeMin="2026-03-20T06:00:00+09:00",
+                searchTimeMax="2026-03-20T07:00:00+09:00",
+                timezone="Asia/Seoul",
+            ),
+        )
+        current = StructuredExtraction(
+            rawMessage="그 일정 삭제해줘",
+            normalizedMessage="그 일정 삭제해줘",
+            channel="web",
+            domain="calendar",
+            action="delete",
+            intent="calendar_delete",
+            needsClarification=True,
+            approvalRequired=True,
+            missingFields=["title", "date_or_time"],
+        )
+
+        merged = apply_reference_context(current, previous)
+
+        self.assertFalse(merged.needs_clarification)
+        self.assertEqual(merged.calendar.search_title, "피자 시키기")
+        self.assertEqual(merged.calendar.search_time_min, "2026-03-20T06:00:00+09:00")
+
+    def test_apply_reference_context_reuses_previous_gmail_send_fields(self) -> None:
+        previous = StructuredExtraction(
+            rawMessage="test@example.com로 제목 주간 보고 내용 오늘 작업 완료 메일 초안 작성해줘",
+            normalizedMessage="test@example.com로 제목 주간 보고 내용 오늘 작업 완료 메일 초안 작성해줘",
+            channel="web",
+            domain="mail",
+            action="draft",
+            intent="gmail_draft",
+            needsClarification=False,
+            approvalRequired=True,
+            mail=MailExtractionPayload(
+                recipients=["test@example.com"],
+                subject="주간 보고",
+                body="오늘 작업 완료",
+            ),
+        )
+        current = StructuredExtraction(
+            rawMessage="그 메일 보내줘",
+            normalizedMessage="그 메일 보내줘",
+            channel="web",
+            domain="mail",
+            action="send",
+            intent="gmail_send",
+            needsClarification=True,
+            approvalRequired=True,
+            missingFields=["recipients", "subject", "body"],
+        )
+
+        merged = apply_reference_context(current, previous)
+
+        self.assertFalse(merged.needs_clarification)
+        self.assertEqual(merged.mail.recipients, ["test@example.com"])
+        self.assertEqual(merged.mail.subject, "주간 보고")
+        self.assertEqual(merged.mail.body, "오늘 작업 완료")
+
+
+class LongTermMemoryPromptTests(unittest.TestCase):
+    def test_build_local_reply_messages_includes_memory_context(self) -> None:
+        messages = _build_local_reply_messages(
+            "오늘 일정 요약해줘",
+            "web",
+            memory_context=[
+                {"category": "preference", "content": "답변은 짧고 오전 기준으로 정리", "source": "manual"},
+                {"category": "profile", "content": "슬랙과 카카오를 같은 사용자로 본다", "source": "admin"},
+            ],
+        )
+
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertIn("장기 메모리", messages[1]["content"])
+        self.assertIn("답변은 짧고 오전 기준으로 정리", messages[1]["content"])
+        self.assertIn("profile/admin", messages[1]["content"])
+        self.assertEqual(messages[-1]["role"], "user")
+
+    def test_build_local_reply_messages_skips_blank_memories(self) -> None:
+        messages = _build_local_reply_messages(
+            "안녕",
+            "web",
+            memory_context=[{"category": "general", "content": "   ", "source": "manual"}],
+        )
+
+        self.assertEqual(len(messages), 2)
+
+
+class AutomaticMemoryExtractionTests(unittest.TestCase):
+    def test_extract_user_memory_candidates_prefers_explicit_preference_cues(self) -> None:
+        candidates = extract_user_memory_candidates("앞으로 일정 요약은 짧게 핵심만 보여줘, 기억해줘")
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["category"], "preference")
+        self.assertEqual(candidates[0]["content"], "일정 요약은 짧게 핵심만 보여줘")
+
+    def test_extract_user_memory_candidates_ignores_secrets(self) -> None:
+        candidates = extract_user_memory_candidates("이 비밀번호는 1234야 기억해줘")
+
+        self.assertEqual(candidates, [])
 
 
 if __name__ == "__main__":

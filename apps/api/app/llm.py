@@ -125,19 +125,62 @@ def _normalize_reply_text(reply: str) -> str:
     return normalized
 
 
-def _build_local_reply_payload(message: str, channel: str) -> dict[str, object]:
+def _build_memory_context_message(memory_context: list[dict[str, str]] | None) -> str | None:
+    if not memory_context:
+        return None
+
+    lines: list[str] = []
+    for item in memory_context[:6]:
+        content = (item.get("content") or "").strip()
+        if not content:
+            continue
+        category = (item.get("category") or "general").strip() or "general"
+        source = (item.get("source") or "manual").strip() or "manual"
+        label = category if source == "manual" else f"{category}/{source}"
+        trimmed = content if len(content) <= 180 else f"{content[:177].rstrip()}..."
+        lines.append(f"- [{label}] {trimmed}")
+
+    if not lines:
+        return None
+
+    return (
+        "다음은 같은 사용자의 장기 메모리다. 검증된 사실처럼 단정하지 말고 참고 문맥으로만 활용하라. "
+        "현재 요청과 충돌하면 최신 사용자 지시를 우선한다.\n"
+        + "\n".join(lines)
+    )
+
+
+def _build_local_reply_messages(
+    message: str,
+    channel: str,
+    memory_context: list[dict[str, str]] | None = None,
+) -> list[dict[str, str]]:
+    messages = [
+        {
+            "role": "system",
+            "content": "당신은 한국어로 간결하고 실용적으로 답하는 AI 개인 비서다.",
+        }
+    ]
+    memory_message = _build_memory_context_message(memory_context)
+    if memory_message:
+        messages.append({"role": "system", "content": memory_message})
+    messages.append(
+        {
+            "role": "user",
+            "content": f"channel={channel}\nrequest={message}",
+        }
+    )
+    return messages
+
+
+def _build_local_reply_payload(
+    message: str,
+    channel: str,
+    memory_context: list[dict[str, str]] | None = None,
+) -> dict[str, object]:
     return {
         "model": settings.local_llm.model,
-        "messages": [
-            {
-                "role": "system",
-                "content": "당신은 한국어로 간결하고 실용적으로 답하는 AI 개인 비서다.",
-            },
-            {
-                "role": "user",
-                "content": f"channel={channel}\nrequest={message}",
-            },
-        ],
+        "messages": _build_local_reply_messages(message, channel, memory_context),
         "temperature": 0.2,
     }
 
@@ -163,9 +206,13 @@ def warm_local_llm() -> bool:
         return False
 
 
-def generate_local_reply(message: str, channel: str) -> tuple[str, str]:
+def generate_local_reply(
+    message: str,
+    channel: str,
+    memory_context: list[dict[str, str]] | None = None,
+) -> tuple[str, str]:
     endpoint = f"{settings.local_llm.base_url.rstrip('/')}/chat/completions"
-    payload = _build_local_reply_payload(message, channel)
+    payload = _build_local_reply_payload(message, channel, memory_context)
 
     try:
         with httpx.Client(timeout=settings.local_llm.timeout_seconds) as client:

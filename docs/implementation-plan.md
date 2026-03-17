@@ -89,7 +89,9 @@
 7. Playwright 기반 브라우저 자동화 read-only 시나리오를 검증하고, 이후 승인 필요 시나리오로 확장할 정책과 결과 저장 형식을 정한다.
 8. AppleScript 기반 macOS 자동화는 Notes 외 추가 앱 시나리오와 권한/장애 복구 기준까지 확장한다.
 9. FastAPI 중심 라우팅에서 LangGraph 기반 상태 라우팅과 승인 후 재개 구조로 점진 전환한다.
-10. 채널 간 사용자 매핑, 공통 세션, 장기 메모리 저장 구조를 추가한다.
+10. 채널 간 사용자 매핑은 `user_identities` 기준으로 연결하고, 장기 메모리는 `user_memories` 기준으로 저장·관리한다. 관리자 경로는 `ADMIN_USERNAME`, `ADMIN_PASSWORD` 기반 로그인과 자동 발급 세션 cookie 기준으로 보호하고, 자동 메모리 적재는 명시적 선호/프로필 문장만 보수적으로 반영한다.
+
+운영자가 실제로 identity link, memory 관리, 관리자 토큰 설정을 수행할 때는 [docs/user-identity-memory-guide.md](docs/user-identity-memory-guide.md)를 기준 문서로 사용한다.
 11. 백업, 복구, 재기동 순서, 헬스체크, 로그 확인 절차를 운영 문서와 실제 검증 결과로 정리한다.
 
 ## 구조화 추출 전환 계획
