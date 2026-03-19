@@ -1,0 +1,12 @@
+[project]
+name = "ai-assistant-macos-mcp-server"
+version = "0.1.0"
+description = "macOS automation MCP server — AppleScript를 통한 Notes, Reminders, 시스템 제어"
+requires-python = ">=3.11"
+dependencies = [
+  "mcp>=1.26.0",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
