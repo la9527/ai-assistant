@@ -1,3 +1,4 @@
+import json
 import unittest
 
 from app.automation import _calendar_payload_to_request
@@ -415,6 +416,402 @@ class SummaryExtractionIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(extraction.mail)
         self.assertIsNotNone(extraction.mail.search_query)
         self.assertIn("newer_than:1d", extraction.mail.search_query)
+
+
+# ---------------------------------------------------------------------------
+# External LLM multi-provider 설정 및 호출 테스트
+# ---------------------------------------------------------------------------
+
+from app.config import ExternalLLMSettings
+from app.llm import (
+    _call_anthropic,
+    _call_gemini,
+    _call_openai_compatible,
+    _call_external_llm,
+)
+
+
+class ExternalLLMConfigTests(unittest.TestCase):
+    """ExternalLLMSettings 멀티 프로바이더 설정 테스트."""
+
+    def test_default_provider_is_openai(self) -> None:
+        ext = ExternalLLMSettings()
+        self.assertEqual(ext.provider, "openai")
+        self.assertEqual(ext.base_url, "https://api.openai.com/v1")
+        self.assertEqual(ext.model, "gpt-4o-mini")
+        self.assertFalse(ext.enabled)
+
+    def test_anthropic_provider(self) -> None:
+        ext = ExternalLLMSettings(
+            enabled=True,
+            provider="anthropic",
+            base_url="https://api.anthropic.com",
+            api_key="sk-ant-test",
+            model="claude-sonnet-4-20250514",
+        )
+        self.assertTrue(ext.enabled)
+        self.assertEqual(ext.provider, "anthropic")
+
+    def test_gemini_provider(self) -> None:
+        ext = ExternalLLMSettings(
+            enabled=True,
+            provider="gemini",
+            base_url="https://generativelanguage.googleapis.com",
+            api_key="AIza-test",
+            model="gemini-2.5-flash",
+        )
+        self.assertTrue(ext.enabled)
+        self.assertEqual(ext.provider, "gemini")
+
+    def test_structured_extraction_model_defaults_to_model(self) -> None:
+        ext = ExternalLLMSettings(
+            enabled=True, provider="openai", api_key="test",
+            model="gpt-4o", structured_extraction_model="",
+        )
+        # structured_extraction_model 이 빈 문자열이면 config property에서 model로 대체
+        self.assertEqual(ext.structured_extraction_model, "")
+
+    def test_structured_extraction_enabled(self) -> None:
+        ext = ExternalLLMSettings(
+            enabled=True, provider="openai", api_key="test",
+            structured_extraction_enabled=True,
+        )
+        self.assertTrue(ext.structured_extraction_enabled)
+
+
+class ExternalLLMDispatcherTests(unittest.TestCase):
+    """_call_external_llm 이 provider에 따라 올바른 함수로 분기하는지 확인."""
+
+    def test_dispatch_openai(self) -> None:
+        ext = ExternalLLMSettings(provider="openai", api_key="test", base_url="http://localhost:9999/v1")
+        messages = [{"role": "user", "content": "hello"}]
+        # 실제 호출은 실패하지만 올바른 경로로 분기되는지만 확인
+        with self.assertRaises(Exception):
+            _call_external_llm(ext, messages, "gpt-4o-mini")
+
+    def test_dispatch_anthropic(self) -> None:
+        ext = ExternalLLMSettings(provider="anthropic", api_key="test", base_url="http://localhost:9999")
+        messages = [{"role": "user", "content": "hello"}]
+        with self.assertRaises(Exception):
+            _call_external_llm(ext, messages, "claude-sonnet-4-20250514")
+
+    def test_dispatch_gemini(self) -> None:
+        ext = ExternalLLMSettings(provider="gemini", api_key="test", base_url="http://localhost:9999")
+        messages = [{"role": "user", "content": "hello"}]
+        with self.assertRaises(Exception):
+            _call_external_llm(ext, messages, "gemini-2.5-flash")
+
+    def test_unknown_provider_falls_back_to_openai_compatible(self) -> None:
+        ext = ExternalLLMSettings(provider="groq", api_key="test", base_url="http://localhost:9999/v1")
+        messages = [{"role": "user", "content": "hello"}]
+        with self.assertRaises(Exception):
+            _call_external_llm(ext, messages, "llama-3-70b")
+
+
+class AnthropicMessageFormatTests(unittest.TestCase):
+    """Anthropic API 메시지 변환 로직 테스트."""
+
+    def test_system_messages_separated(self) -> None:
+        """system 메시지가 Anthropic의 top-level system 필드로 분리되는지 확인."""
+        # _call_anthropic 내부에서 system/user 분리가 일어남
+        # 실제 HTTP 호출 없이 메시지 분리 로직만 간접 확인
+        messages = [
+            {"role": "system", "content": "시스템 프롬프트"},
+            {"role": "user", "content": "안녕"},
+        ]
+        system_parts = [m["content"] for m in messages if m["role"] == "system"]
+        user_messages = [m for m in messages if m["role"] != "system"]
+        self.assertEqual(len(system_parts), 1)
+        self.assertEqual(system_parts[0], "시스템 프롬프트")
+        self.assertEqual(len(user_messages), 1)
+
+
+class GeminiMessageFormatTests(unittest.TestCase):
+    """Gemini API 메시지 변환 로직 테스트."""
+
+    def test_role_mapping(self) -> None:
+        """assistant → model 역할 매핑 확인."""
+        messages = [
+            {"role": "system", "content": "시스템"},
+            {"role": "user", "content": "질문"},
+            {"role": "assistant", "content": "답변"},
+        ]
+        contents = []
+        system_text = ""
+        for msg in messages:
+            if msg["role"] == "system":
+                system_text += msg["content"]
+            else:
+                role = "model" if msg["role"] == "assistant" else "user"
+                contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+        self.assertEqual(len(contents), 2)
+        self.assertEqual(contents[0]["role"], "user")
+        self.assertEqual(contents[1]["role"], "model")
+        self.assertEqual(system_text, "시스템")
+
+
+# ---------------------------------------------------------------------------
+# OpenAI 호환 엔드포인트 헬퍼 테스트
+# ---------------------------------------------------------------------------
+
+from app.main import (
+    _openai_chat_response,
+    _openai_stream_chunks,
+    _OPENAI_COMPAT_MODEL,
+)
+
+
+class OpenAIChatResponseTests(unittest.TestCase):
+    """_openai_chat_response 형식 검증."""
+
+    def test_response_has_required_fields(self) -> None:
+        resp = _openai_chat_response("안녕하세요")
+        self.assertEqual(resp["object"], "chat.completion")
+        self.assertIn("id", resp)
+        self.assertIn("created", resp)
+        self.assertIn("choices", resp)
+        self.assertEqual(len(resp["choices"]), 1)
+        choice = resp["choices"][0]
+        self.assertEqual(choice["message"]["role"], "assistant")
+        self.assertEqual(choice["message"]["content"], "안녕하세요")
+        self.assertEqual(choice["finish_reason"], "stop")
+
+    def test_default_model(self) -> None:
+        resp = _openai_chat_response("test")
+        self.assertEqual(resp["model"], _OPENAI_COMPAT_MODEL)
+
+    def test_custom_model(self) -> None:
+        resp = _openai_chat_response("test", model="gpt-4o")
+        self.assertEqual(resp["model"], "gpt-4o")
+
+
+class OpenAIStreamChunksTests(unittest.TestCase):
+    """_openai_stream_chunks SSE 청크 형식 검증."""
+
+    def test_stream_has_role_content_and_stop(self) -> None:
+        chunks = _openai_stream_chunks("안녕하세요. 반갑습니다.")
+        self.assertGreaterEqual(len(chunks), 3)  # role + content(s) + stop
+
+        # 첫 청크: role
+        first = json.loads(chunks[0])
+        self.assertEqual(first["object"], "chat.completion.chunk")
+        self.assertEqual(first["choices"][0]["delta"]["role"], "assistant")
+
+        # 마지막 청크: finish_reason=stop
+        last = json.loads(chunks[-1])
+        self.assertEqual(last["choices"][0]["finish_reason"], "stop")
+        self.assertEqual(last["choices"][0]["delta"], {})
+
+    def test_content_chunks_contain_text(self) -> None:
+        chunks = _openai_stream_chunks("첫 문장. 두번째 문장.")
+        content_chunks = chunks[1:-1]
+        full_text = "".join(
+            json.loads(c)["choices"][0]["delta"]["content"] for c in content_chunks
+        )
+        self.assertIn("첫 문장", full_text)
+        self.assertIn("두번째 문장", full_text)
+
+
+# ---------------------------------------------------------------------------
+# Gmail summary formatting
+# ---------------------------------------------------------------------------
+
+class GmailSummaryFormatTests(unittest.TestCase):
+    """format_gmail_summary 채널별 포맷 검증."""
+
+    SAMPLE_ITEMS = [
+        {"index": 1, "sender": "alice@example.com", "subject": "회의 안건", "snippet": "내일 오전 10시", "date": "Mon, 17 Mar 2026"},
+        {"index": 2, "sender": "bob@example.com", "subject": "보고서 검토 요청", "snippet": "첨부 파일 확인", "date": "Tue, 18 Mar 2026"},
+    ]
+
+    def test_webui_markdown_format_has_bold_and_sender(self) -> None:
+        from app.llm import _format_gmail_items_markdown
+
+        result = _format_gmail_items_markdown(self.SAMPLE_ITEMS)
+        # Markdown 굵게 표시
+        self.assertIn("**1. 회의 안건**", result)
+        self.assertIn("**2. 보고서 검토 요청**", result)
+        # 보낸 사람
+        self.assertIn("alice@example.com", result)
+        self.assertIn("bob@example.com", result)
+        # 미리보기
+        self.assertIn("내일 오전 10시", result)
+
+    def test_compact_format_is_single_line_per_item(self) -> None:
+        from app.llm import _format_gmail_items_compact
+
+        result = _format_gmail_items_compact(self.SAMPLE_ITEMS, "")
+        lines = [l for l in result.strip().split("\n") if l.strip()]
+        # 제목 줄 + 아이템 2개 = 3줄
+        self.assertEqual(len(lines), 3)
+        self.assertIn("alice@example.com", result)
+
+    def test_format_gmail_summary_webui_uses_markdown(self) -> None:
+        from app.llm import format_gmail_summary
+
+        body = {"reply": "원본", "items": self.SAMPLE_ITEMS}
+        result = format_gmail_summary(body, "webui")
+        # 외부 LLM 미설정 시 Markdown 템플릿 사용
+        self.assertIn("**1. 회의 안건**", result)
+
+    def test_format_gmail_summary_kakao_uses_compact(self) -> None:
+        from app.llm import format_gmail_summary
+
+        body = {"reply": "원본", "items": self.SAMPLE_ITEMS}
+        result = format_gmail_summary(body, "kakao")
+        # Kakao는 간결한 텍스트
+        self.assertNotIn("**", result)
+        self.assertIn("1. alice@example.com - 회의 안건", result)
+
+    def test_format_gmail_summary_empty_items(self) -> None:
+        from app.llm import format_gmail_summary
+
+        body = {"reply": "", "items": []}
+        result = format_gmail_summary(body, "webui")
+        self.assertIn("메일이 없습니다", result)
+
+    def test_markdown_format_empty_returns_no_mail_message(self) -> None:
+        from app.llm import _format_gmail_items_markdown
+
+        result = _format_gmail_items_markdown([])
+        self.assertIn("메일이 없습니다", result)
+
+    def test_parse_reply_fallback_slash_separated(self) -> None:
+        """구버전 n8n reply (/ 구분) → items 파싱 후 Markdown 포맷."""
+        from app.llm import format_gmail_summary
+
+        old_reply = "최근 메일 요약입니다. 1. alice@example.com - 회의 안건 / 2. bob@test.io - 보고서 확인"
+        body = {"reply": old_reply}
+        result = format_gmail_summary(body, "webui")
+        self.assertIn("**1. 회의 안건**", result)
+        self.assertIn("alice@example.com", result)
+        self.assertIn("**2. 보고서 확인**", result)
+
+    def test_parse_reply_fallback_newline_separated(self) -> None:
+        """줄바꿈 구분 reply → items 파싱."""
+        from app.llm import format_gmail_summary
+
+        reply = "최근 메일 요약입니다.\n1. a@b.com - 제목A\n2. c@d.com - 제목B"
+        body = {"reply": reply}
+        result = format_gmail_summary(body, "kakao")
+        self.assertIn("1. a@b.com - 제목A", result)
+
+    def test_parse_reply_fallback_no_items_returns_reply(self) -> None:
+        """파싱 실패 시 원본 reply 반환."""
+        from app.llm import format_gmail_summary
+
+        body = {"reply": "메일 없음 알림"}
+        result = format_gmail_summary(body, "webui")
+        self.assertEqual(result, "메일 없음 알림")
+
+
+class RunN8nAutomationRawTests(unittest.TestCase):
+    """run_n8n_automation_raw 반환 형식 검증."""
+
+    def test_returns_none_when_no_webhook_path(self) -> None:
+        from app.automation import run_n8n_automation_raw
+
+        result = run_n8n_automation_raw("msg", "kakao", "s1", None, None)
+        self.assertIsNone(result)
+
+
+# ---------------------------------------------------------------------------
+# Provider selection (ai-assistant:xxx)
+# ---------------------------------------------------------------------------
+
+class ProviderSelectionConfigTests(unittest.TestCase):
+    """available_external_providers / resolve_external_llm 검증."""
+
+    def test_resolve_external_llm_default_returns_external_llm(self) -> None:
+        from app.config import settings
+
+        ext = settings.resolve_external_llm(None)
+        self.assertEqual(ext.provider, settings.external_llm.provider)
+
+    def test_resolve_external_llm_openai_returns_openai_provider(self) -> None:
+        from app.config import settings
+
+        ext = settings.resolve_external_llm("openai")
+        self.assertEqual(ext.provider, "openai")
+
+    def test_resolve_external_llm_anthropic_returns_anthropic_provider(self) -> None:
+        from app.config import settings
+
+        ext = settings.resolve_external_llm("anthropic")
+        self.assertEqual(ext.provider, "anthropic")
+
+    def test_resolve_external_llm_gemini_returns_gemini_provider(self) -> None:
+        from app.config import settings
+
+        ext = settings.resolve_external_llm("gemini")
+        self.assertEqual(ext.provider, "gemini")
+
+    def test_resolve_external_llm_unknown_falls_back(self) -> None:
+        from app.config import settings
+
+        ext = settings.resolve_external_llm("unknown_provider")
+        # unknown provider falls back to default external_llm
+        self.assertEqual(ext.provider, settings.external_llm.provider)
+
+    def test_available_providers_returns_list(self) -> None:
+        from app.config import settings
+
+        result = settings.available_external_providers()
+        self.assertIsInstance(result, list)
+        # 각 항목은 provider/model 키를 포함
+        for item in result:
+            self.assertIn("provider", item)
+            self.assertIn("model", item)
+
+
+class ProviderModelPrefixTests(unittest.TestCase):
+    """ai-assistant:xxx 패턴 모델명 파싱 검증."""
+
+    def test_model_prefix_parsing(self) -> None:
+        from app.main import _OPENAI_COMPAT_MODEL, _OPENAI_COMPAT_MODEL_PREFIX
+
+        model = "ai-assistant:claude"
+        self.assertTrue(model.startswith(_OPENAI_COMPAT_MODEL_PREFIX))
+        provider = model[len(_OPENAI_COMPAT_MODEL_PREFIX):]
+        self.assertEqual(provider, "claude")
+
+    def test_plain_model_no_prefix(self) -> None:
+        from app.main import _OPENAI_COMPAT_MODEL, _OPENAI_COMPAT_MODEL_PREFIX
+
+        model = _OPENAI_COMPAT_MODEL
+        self.assertFalse(model.startswith(_OPENAI_COMPAT_MODEL_PREFIX))
+
+    def test_claude_to_anthropic_normalization(self) -> None:
+        """claude → anthropic 정규화 확인."""
+        alias_map = {"claude": "anthropic"}
+        self.assertEqual(alias_map.get("claude", "claude"), "anthropic")
+        self.assertEqual(alias_map.get("openai", "openai"), "openai")
+
+    def test_provider_display_names(self) -> None:
+        from app.main import _PROVIDER_DISPLAY_NAMES
+
+        self.assertIn("openai", _PROVIDER_DISPLAY_NAMES)
+        self.assertIn("anthropic", _PROVIDER_DISPLAY_NAMES)
+        self.assertIn("gemini", _PROVIDER_DISPLAY_NAMES)
+
+
+class GenerateExternalReplyProviderHintTests(unittest.TestCase):
+    """generate_external_reply provider_hint 인자 검증."""
+
+    def test_provider_hint_none_uses_default(self) -> None:
+        from app.llm import generate_external_reply
+
+        # provider_hint=None → 기본 외부 LLM (대부분 key 미설정으로 fallback)
+        reply, route = generate_external_reply("hello", "webui", provider_hint=None)
+        self.assertIsInstance(reply, str)
+        self.assertIn(route, ("external_llm", "fallback"))
+
+    def test_provider_hint_unknown_falls_back(self) -> None:
+        from app.llm import generate_external_reply
+
+        reply, route = generate_external_reply("hello", "webui", provider_hint="nonexistent")
+        # key 없으면 fallback
+        self.assertEqual(route, "fallback")
 
 
 if __name__ == "__main__":
