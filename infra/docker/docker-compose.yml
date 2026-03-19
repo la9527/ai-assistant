@@ -29,8 +29,8 @@ services:
     image: ghcr.io/open-webui/open-webui:v0.8.10
     environment:
       ENABLE_OPENAI_API: "true"
-      OPENAI_API_BASE_URLS: http://host.docker.internal:1236/v1
-      OPENAI_API_KEYS: ""
+      OPENAI_API_BASE_URLS: http://api:8000/v1
+      OPENAI_API_KEYS: "${API_KEY:-}"
       ENABLE_OLLAMA_API: "false"
     volumes:
       - openwebui_data:/app/backend/data

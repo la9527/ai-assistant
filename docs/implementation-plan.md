@@ -101,6 +101,8 @@
 - [x] 15. API 인증 및 Rate Limiting: API_KEY 환경변수 기반 `X-API-Key` 헤더 미들웨어, slowapi 기반 `/api/chat` 분당 30회 제한, `/api/health`·`/api/kakao/*`·`/api/slack/*` 인증 면제 경로 설정 완료.
 - [x] 16. MCP(Model Context Protocol) 클라이언트를 도입해 외부 도구 서버를 설정 파일(MCP_SERVERS 환경변수) 기반으로 연결한다. MCPManager, MCPConnection, 스킬 레지스트리 자동 등록, LangGraph execute_mcp_tool 노드 구현 완료.
 - [x] 17. macOS 자동화를 MCP 서버로 격리해 Worker/API와 독립 배포 가능한 구조로 전환한다. apps/macos-mcp-server/ 에 stdio 모드 MCP 서버로 분리 완료.
+- [x] 18. 외부 LLM 멀티 프로바이더 지원: OpenAI, Anthropic(Claude), Google Gemini 3사 API를 provider 설정으로 전환. 채팅과 구조화 추출 모두 외부 LLM 우선/fallback 모드 선택 가능. `_call_openai_compatible`, `_call_anthropic`, `_call_gemini` 디스패처 구현 완료.
+- [x] 19. Open WebUI 연동: FastAPI에 OpenAI 호환 프록시 엔드포인트(`/v1/chat/completions`, `/v1/models`) 추가. Open WebUI가 FastAPI를 LLM 백엔드로 인식하여 일정·메일·노트 자동화를 웹 UI에서 직접 사용 가능. `ai-assistant` 모델 선택 시 자동화 파이프라인, 로컬 모델 선택 시 순수 채팅 포워딩. 스트리밍 지원.
 - [ ] 14. 백업, 복구, 재기동 순서, 헬스체크, 로그 확인 절차를 운영 문서와 실제 검증 결과로 정리한다.
 
 ## 구조화 추출 전환 계획

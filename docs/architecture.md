@@ -49,6 +49,7 @@ flowchart TB
 
     Proxy --> API
   Proxy --> Web
+  Web --> API
 
     API --> Graph
     Graph --> LocalRuntime
@@ -61,6 +62,8 @@ flowchart TB
     N8N --> Postgres
     N8N --> Redis
 ```
+
+> **Open WebUI ↔ FastAPI 연동**: Open WebUI는 `OPENAI_API_BASE_URLS=http://api:8000/v1`로 설정되어 FastAPI의 OpenAI 호환 엔드포인트(`/v1/chat/completions`, `/v1/models`)를 통해 자동화 파이프라인에 직접 접근한다. 모델 드롭다운에서 `ai-assistant`를 선택하면 일정·메일·노트 등 개인 비서 기능이 동작하고, 로컬 MLX 모델을 선택하면 순수 채팅으로 포워딩된다.
 
   ## 현재 외부 접근 토폴로지
 
@@ -307,10 +310,51 @@ LangGraph에 과도한 영역:
 - 복잡한 툴 사용 계획
 - 로컬 모델 품질 보완
 
-권장 방식:
+### 지원 프로바이더
 
-- 초기는 1개 공급자만 연결
-- 확장 시 LiteLLM 같은 게이트웨이 검토
+| 프로바이더 | provider 값 | base_url 기본값 | 인증 방식 |
+|-----------|-------------|-----------------|----------|
+| OpenAI | `openai` | `https://api.openai.com/v1` | Bearer token |
+| Anthropic (Claude) | `anthropic` | `https://api.anthropic.com` | `x-api-key` 헤더 |
+| Google Gemini | `gemini` | `https://generativelanguage.googleapis.com` | URL query `key=` |
+
+OpenAI 호환 서비스(Together, Groq, Fireworks 등)는 `provider=openai`로 `base_url`만 변경하면 동작한다.
+
+### 동작 모드
+
+| 환경변수 조합 | 채팅 | 구조화 추출 |
+|-------------|------|-----------|
+| `EXTERNAL_LLM_ENABLED=false` | 로컬 only | 로컬 only |
+| `ENABLED=true`, `FALLBACK_ONLY=true` | 로컬 → 실패 시 외부 | 로컬 only |
+| `ENABLED=true`, `FALLBACK_ONLY=false` | 외부 → 실패 시 로컬 | 로컬 only |
+| `ENABLED=true`, `FALLBACK_ONLY=false`, `STRUCTURED_EXTRACTION_ENABLED=true` | 외부 → 로컬 | 외부 → 로컬 |
+
+### 환경변수 예시
+
+```env
+# OpenAI
+EXTERNAL_LLM_ENABLED=true
+EXTERNAL_LLM_PROVIDER=openai
+EXTERNAL_LLM_API_KEY=sk-...
+EXTERNAL_LLM_MODEL=gpt-4o-mini
+EXTERNAL_LLM_FALLBACK_ONLY=false
+
+# Anthropic (Claude)
+EXTERNAL_LLM_PROVIDER=anthropic
+EXTERNAL_LLM_BASE_URL=https://api.anthropic.com
+EXTERNAL_LLM_API_KEY=sk-ant-...
+EXTERNAL_LLM_MODEL=claude-sonnet-4-20250514
+
+# Google Gemini
+EXTERNAL_LLM_PROVIDER=gemini
+EXTERNAL_LLM_BASE_URL=https://generativelanguage.googleapis.com
+EXTERNAL_LLM_API_KEY=AIza...
+EXTERNAL_LLM_MODEL=gemini-2.5-flash
+
+# 구조화 추출도 외부 LLM 사용
+EXTERNAL_LLM_STRUCTURED_EXTRACTION_ENABLED=true
+EXTERNAL_LLM_STRUCTURED_EXTRACTION_MODEL=gpt-4o  # 비워두면 EXTERNAL_LLM_MODEL 사용
+```
 
 외부 전송 전 정책:
 
