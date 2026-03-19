@@ -28,6 +28,32 @@ class BrowserReadResponse(BaseModel):
     fetched_at: str = Field(alias="fetchedAt")
 
 
+class BrowserScreenshotRequest(BaseModel):
+    url: str
+    timeout_ms: int = Field(default=15000, alias="timeoutMs", ge=1000, le=60000)
+    full_page: bool = Field(default=False, alias="fullPage")
+    viewport_width: int = Field(default=1280, alias="viewportWidth", ge=320, le=3840)
+    viewport_height: int = Field(default=720, alias="viewportHeight", ge=240, le=2160)
+
+
+class BrowserSearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=500)
+    max_results: int = Field(default=5, alias="maxResults", ge=1, le=10)
+    timeout_ms: int = Field(default=20000, alias="timeoutMs", ge=1000, le=60000)
+
+
+class SearchResult(BaseModel):
+    title: str
+    url: str
+    snippet: str
+
+
+class BrowserSearchResponse(BaseModel):
+    query: str
+    results: list[SearchResult]
+    fetched_at: str = Field(alias="fetchedAt")
+
+
 app = FastAPI(title="AI Assistant Browser Runner", version="0.1.0")
 
 
@@ -95,6 +121,106 @@ async def browse_read(payload: BrowserReadRequest) -> BrowserReadResponse:
         description=str(description_value) if description_value else None,
         headings=headings,
         contentExcerpt=excerpt,
+        fetchedAt=datetime.now(UTC).isoformat(),
+    )
+
+
+@app.post("/browse/screenshot")
+async def browse_screenshot(payload: BrowserScreenshotRequest):
+    """페이지 스크린샷을 PNG 바이트로 반환한다."""
+    _validate_url(payload.url)
+
+    try:
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            page = await browser.new_page(
+                viewport={"width": payload.viewport_width, "height": payload.viewport_height},
+            )
+            await page.goto(payload.url, wait_until="networkidle", timeout=payload.timeout_ms)
+            png_bytes = await page.screenshot(full_page=payload.full_page, type="png")
+            title = await page.title()
+            await browser.close()
+    except PlaywrightTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=f"screenshot timed out: {exc}") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"screenshot failed: {exc}") from exc
+
+    import base64
+
+    return {
+        "url": payload.url,
+        "title": title,
+        "image_base64": base64.b64encode(png_bytes).decode(),
+        "width": payload.viewport_width,
+        "height": payload.viewport_height,
+        "fetchedAt": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.post("/browse/search", response_model=BrowserSearchResponse)
+async def browse_search(payload: BrowserSearchRequest) -> BrowserSearchResponse:
+    """Google 검색 결과를 Playwright로 가져온다."""
+    import urllib.parse
+
+    search_url = f"https://www.google.com/search?q={urllib.parse.quote_plus(payload.query)}&hl=ko"
+
+    try:
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            page = await browser.new_page(
+                user_agent=(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                ),
+            )
+            await page.goto(search_url, wait_until="domcontentloaded", timeout=payload.timeout_ms)
+            await page.wait_for_selector("#search", timeout=payload.timeout_ms)
+
+            raw_results = await page.evaluate(
+                r"""
+                (maxResults) => {
+                  const items = [];
+                  document.querySelectorAll('#search .g').forEach((el) => {
+                    if (items.length >= maxResults) return;
+                    const anchor = el.querySelector('a[href]');
+                    const title = el.querySelector('h3');
+                    const snippet = el.querySelector('.VwiC3b, [data-sncf], [style*="-webkit-line-clamp"]');
+                    if (anchor && title) {
+                      items.push({
+                        title: (title.textContent || '').trim(),
+                        url: anchor.href,
+                        snippet: (snippet?.textContent || '').trim(),
+                      });
+                    }
+                  });
+                  return items;
+                }
+                """,
+                payload.max_results,
+            )
+            await browser.close()
+    except PlaywrightTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=f"search timed out: {exc}") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"search failed: {exc}") from exc
+
+    results = [
+        SearchResult(
+            title=str(r.get("title", "")),
+            url=str(r.get("url", "")),
+            snippet=str(r.get("snippet", "")),
+        )
+        for r in (raw_results or [])
+    ]
+
+    return BrowserSearchResponse(
+        query=payload.query,
+        results=results,
         fetchedAt=datetime.now(UTC).isoformat(),
     )
 
