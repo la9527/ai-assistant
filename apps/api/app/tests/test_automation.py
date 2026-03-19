@@ -1,8 +1,13 @@
 import unittest
 
 from app.automation import _calendar_payload_to_request
+from app.automation import _build_gmail_search_query
+from app.automation import _parse_summary_time_range
 from app.automation import apply_reference_context
+from app.automation import extract_candidates_from_reply
+from app.automation import extract_structured_request
 from app.automation import extract_user_memory_candidates
+from app.automation import parse_ordinal_index
 from app.llm import _build_local_reply_messages
 from app.automation import _mail_payload_to_compose_request
 from app.automation import _mail_payload_to_reply_request
@@ -263,6 +268,153 @@ class AutomaticMemoryExtractionTests(unittest.TestCase):
         candidates = extract_user_memory_candidates("이 비밀번호는 1234야 기억해줘")
 
         self.assertEqual(candidates, [])
+
+
+class ParseOrdinalIndexTests(unittest.TestCase):
+    def test_korean_ordinals(self) -> None:
+        self.assertEqual(parse_ordinal_index("두 번째 일정 삭제해줘"), 1)
+        self.assertEqual(parse_ordinal_index("첫 번째로 해줘"), 0)
+        self.assertEqual(parse_ordinal_index("세번째"), 2)
+
+    def test_digit_ordinals(self) -> None:
+        self.assertEqual(parse_ordinal_index("1번 선택"), 0)
+        self.assertEqual(parse_ordinal_index("3번으로 해"), 2)
+
+    def test_no_ordinal_returns_none(self) -> None:
+        self.assertIsNone(parse_ordinal_index("내일 일정 알려줘"))
+
+    def test_out_of_range_digit_returns_none(self) -> None:
+        self.assertIsNone(parse_ordinal_index("0번으로"))
+        self.assertIsNone(parse_ordinal_index("100번"))
+
+
+class ExtractCandidatesFromReplyTests(unittest.TestCase):
+    def test_extracts_numbered_list(self) -> None:
+        reply = "일정 목록입니다:\n1. 팀 미팅 오전 10시\n2. 점심 약속 12시\n3. 코드 리뷰 3시"
+        result = extract_candidates_from_reply(reply, "n8n")
+
+        self.assertEqual(len(result), 3)
+        self.assertEqual(result[0]["index"], 0)
+        self.assertIn("팀 미팅", result[0]["label"])
+        self.assertEqual(result[2]["index"], 2)
+
+    def test_ignores_single_item(self) -> None:
+        reply = "결과:\n1. 하나만 있음"
+        result = extract_candidates_from_reply(reply, "n8n")
+        self.assertEqual(result, [])
+
+    def test_ignores_unsupported_routes(self) -> None:
+        reply = "1. 첫번째\n2. 두번째"
+        result = extract_candidates_from_reply(reply, "direct")
+        self.assertEqual(result, [])
+
+
+class CandidateSelectionReferenceTests(unittest.TestCase):
+    def _make_extraction(self, message: str, domain: str = "calendar", action: str = "read") -> StructuredExtraction:
+        cal = CalendarExtractionPayload() if domain == "calendar" else None
+        return StructuredExtraction(
+            raw_message=message,
+            normalizedMessage=message,
+            domain=domain,
+            action=action,
+            intent=f"{domain}_{action}",
+            confidence=0.8,
+            calendar=cal,
+        )
+
+    def test_ordinal_selects_candidate(self) -> None:
+        extraction = self._make_extraction("두 번째 삭제해줘", domain="calendar", action="delete")
+        previous = self._make_extraction("일정 보여줘", domain="calendar", action="read")
+        candidates = [
+            {"index": 0, "label": "팀 미팅 10시", "raw": "팀 미팅 10시"},
+            {"index": 1, "label": "점심 약속 12시", "raw": "점심 약속 12시"},
+            {"index": 2, "label": "코드 리뷰 3시", "raw": "코드 리뷰 3시"},
+        ]
+
+        result = apply_reference_context(extraction, previous, last_candidates=candidates)
+
+        self.assertTrue(result.metadata.get("candidate_selected"))
+        self.assertEqual(result.metadata.get("candidate_index"), 1)
+        self.assertEqual(result.calendar.title, "점심 약속 12시")
+
+    def test_ordinal_without_candidates_does_nothing(self) -> None:
+        extraction = self._make_extraction("두 번째 보여줘", domain="calendar")
+        previous = self._make_extraction("일정 보여줘", domain="calendar")
+
+        result = apply_reference_context(extraction, previous, last_candidates=None)
+        self.assertFalse(result.metadata.get("candidate_selected", False))
+
+    def test_chat_domain_inherits_from_previous(self) -> None:
+        extraction = self._make_extraction("1번", domain="chat", action="reply")
+        extraction.calendar = None
+        previous = self._make_extraction("일정 보여줘", domain="calendar", action="read")
+        candidates = [
+            {"index": 0, "label": "팀 미팅 10시", "raw": "팀 미팅 10시"},
+            {"index": 1, "label": "점심 약속 12시", "raw": "점심 약속 12시"},
+        ]
+
+        result = apply_reference_context(extraction, previous, last_candidates=candidates)
+
+        self.assertEqual(result.domain, "calendar")
+        self.assertEqual(result.action, "read")
+
+
+class SummaryTimeRangeTests(unittest.TestCase):
+    def test_today_returns_range(self) -> None:
+        time_min, time_max = _parse_summary_time_range("오늘 일정 보여줘")
+
+        self.assertIsNotNone(time_min)
+        self.assertIsNotNone(time_max)
+        self.assertIn("T00:00:00", time_min)
+
+    def test_this_week_returns_range(self) -> None:
+        time_min, time_max = _parse_summary_time_range("이번 주 일정 알려줘")
+
+        self.assertIsNotNone(time_min)
+        self.assertIsNotNone(time_max)
+
+    def test_no_time_ref_returns_none(self) -> None:
+        time_min, time_max = _parse_summary_time_range("일정 보여줘")
+
+        self.assertIsNone(time_min)
+        self.assertIsNone(time_max)
+
+
+class GmailSearchQueryTests(unittest.TestCase):
+    def test_today_mail(self) -> None:
+        query = _build_gmail_search_query("오늘 메일 보여줘")
+
+        self.assertIsNotNone(query)
+        self.assertIn("newer_than:1d", query)
+
+    def test_recent_mail(self) -> None:
+        query = _build_gmail_search_query("최근 메일 알려줘")
+
+        self.assertIsNotNone(query)
+        self.assertIn("newer_than:3d", query)
+
+    def test_no_filter_returns_none(self) -> None:
+        query = _build_gmail_search_query("메일 보여줘")
+
+        self.assertIsNone(query)
+
+
+class SummaryExtractionIntegrationTests(unittest.TestCase):
+    def test_calendar_summary_includes_time_payload(self) -> None:
+        extraction = extract_structured_request("오늘 일정 보여줘")
+
+        self.assertEqual(extraction.intent, "calendar_summary")
+        self.assertIsNotNone(extraction.calendar)
+        self.assertIsNotNone(extraction.calendar.search_time_min)
+        self.assertIsNotNone(extraction.calendar.search_time_max)
+
+    def test_gmail_summary_includes_search_query(self) -> None:
+        extraction = extract_structured_request("오늘 메일 알려줘")
+
+        self.assertEqual(extraction.intent, "gmail_summary")
+        self.assertIsNotNone(extraction.mail)
+        self.assertIsNotNone(extraction.mail.search_query)
+        self.assertIn("newer_than:1d", extraction.mail.search_query)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ from pydantic import BaseModel
 from pydantic import Field
 from pydantic_settings import BaseSettings
 from pydantic_settings import SettingsConfigDict
+import json
 import secrets
 
 
@@ -16,6 +17,16 @@ class LocalLLMSettings(BaseModel):
     structured_extraction_enabled: bool = Field(default=True)
     structured_extraction_timeout_seconds: float = Field(default=25.0)
     structured_extraction_targets: tuple[str, ...] = ("calendar_delete", "gmail_reply", "gmail_thread_reply")
+
+
+class ExternalLLMSettings(BaseModel):
+    enabled: bool = Field(default=False)
+    provider: str = Field(default="openai")
+    base_url: str = Field(default="https://api.openai.com/v1")
+    api_key: str = Field(default="")
+    model: str = Field(default="gpt-4o-mini")
+    timeout_seconds: float = Field(default=60.0)
+    fallback_only: bool = Field(default=True)
 
 
 class Settings(BaseSettings):
@@ -75,6 +86,22 @@ class Settings(BaseSettings):
     admin_password: str = Field(default="", alias="ADMIN_PASSWORD")
     admin_session_secret: str = Field(default="", alias="ADMIN_SESSION_SECRET")
     admin_session_ttl_seconds: int = Field(default=43200, alias="ADMIN_SESSION_TTL_SECONDS")
+    external_llm_enabled: bool = Field(default=False, alias="EXTERNAL_LLM_ENABLED")
+    external_llm_provider: str = Field(default="openai", alias="EXTERNAL_LLM_PROVIDER")
+    external_llm_base_url: str = Field(default="https://api.openai.com/v1", alias="EXTERNAL_LLM_BASE_URL")
+    external_llm_api_key: str = Field(default="", alias="EXTERNAL_LLM_API_KEY")
+    external_llm_model: str = Field(default="gpt-4o-mini", alias="EXTERNAL_LLM_MODEL")
+    external_llm_timeout_seconds: float = Field(default=60.0, alias="EXTERNAL_LLM_TIMEOUT_SECONDS")
+    external_llm_fallback_only: bool = Field(default=True, alias="EXTERNAL_LLM_FALLBACK_ONLY")
+    web_search_enabled: bool = Field(default=False, alias="WEB_SEARCH_ENABLED")
+    web_search_provider: str = Field(default="tavily", alias="WEB_SEARCH_PROVIDER")
+    tavily_api_key: str = Field(default="", alias="TAVILY_API_KEY")
+    web_search_max_results: int = Field(default=5, alias="WEB_SEARCH_MAX_RESULTS")
+    api_key: str = Field(default="", alias="API_KEY")
+    rate_limit_chat: str = Field(default="30/minute", alias="RATE_LIMIT_CHAT")
+    rate_limit_default: str = Field(default="60/minute", alias="RATE_LIMIT_DEFAULT")
+    mcp_servers_json: str = Field(default="", alias="MCP_SERVERS")
+    calendar_timezone: str = Field(default="Asia/Seoul", alias="CALENDAR_TIMEZONE")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -96,6 +123,18 @@ class Settings(BaseSettings):
         )
 
     @property
+    def external_llm(self) -> ExternalLLMSettings:
+        return ExternalLLMSettings(
+            enabled=self.external_llm_enabled and bool(self.external_llm_api_key),
+            provider=self.external_llm_provider,
+            base_url=self.external_llm_base_url,
+            api_key=self.external_llm_api_key,
+            model=self.external_llm_model,
+            timeout_seconds=self.external_llm_timeout_seconds,
+            fallback_only=self.external_llm_fallback_only,
+        )
+
+    @property
     def slack_auto_response_channels(self) -> set[str]:
         return {
             item.strip().lstrip("#").lower()
@@ -108,8 +147,29 @@ class Settings(BaseSettings):
         return bool(self.admin_username.strip() and self.admin_password)
 
     @property
+    def web_search_available(self) -> bool:
+        return self.web_search_enabled and bool(self.tavily_api_key)
+
+    @property
     def resolved_admin_session_secret(self) -> str:
         return self.admin_session_secret or secrets.token_urlsafe(32)
+
+    @property
+    def mcp_servers(self) -> list[dict]:
+        """MCP_SERVERS 환경변수에서 서버 설정 목록을 파싱한다.
+
+        형식: JSON 배열 예시:
+        [{"name": "filesystem", "transport": "sse", "url": "http://localhost:3001/sse"}]
+        """
+        if not self.mcp_servers_json.strip():
+            return []
+        try:
+            parsed = json.loads(self.mcp_servers_json)
+            if isinstance(parsed, list):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return []
 
 
 settings = Settings()

@@ -1,4 +1,5 @@
 import httpx
+import logging
 import re
 from datetime import datetime
 from datetime import timedelta
@@ -12,6 +13,10 @@ from app.schemas import ExtractionReference
 from app.schemas import MailExtractionPayload
 from app.schemas import NoteExtractionPayload
 from app.schemas import StructuredExtraction
+from app.skills.registry import classify_intent_from_registry
+from app.skills.registry import ensure_initialized as _ensure_skills
+
+logger = logging.getLogger("uvicorn.error")
 
 
 CALENDAR_AUTOMATION_KEYWORDS = (
@@ -45,6 +50,13 @@ GMAIL_REPLY_KEYWORDS = ("답장", "회신", "reply")
 GMAIL_THREAD_KEYWORDS = ("이어", "이어서", "계속", "thread", "스레드")
 MACOS_NOTE_KEYWORDS = ("메모", "노트", "notes")
 MACOS_NOTE_CREATE_KEYWORDS = ("추가", "작성", "저장", "기록", "남겨", "만들")
+MACOS_REMINDER_KEYWORDS = ("미리알림", "리마인더", "reminder", "할일", "할 일")
+MACOS_REMINDER_CREATE_KEYWORDS = ("추가", "등록", "만들", "생성", "작성")
+MACOS_VOLUME_KEYWORDS = ("볼륨", "volume", "소리", "음량")
+MACOS_DARKMODE_KEYWORDS = ("다크모드", "다크 모드", "라이트모드", "라이트 모드", "dark mode")
+MACOS_FINDER_KEYWORDS = ("파인더", "finder", "폴더 열")
+VOLUME_LEVEL_PATTERN = re.compile(r"(\d{1,3})\s*(?:%|퍼센트)?")
+WEB_SEARCH_KEYWORDS = ("검색", "찾아줘", "찾아 줘", "search", "가격", "환율", "주가", "날씨")
 
 EMAIL_ADDRESS_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 URL_PATTERN = re.compile(r"https?://[^\s,]+", re.IGNORECASE)
@@ -60,12 +72,45 @@ REFERENCE_MESSAGE_HINTS = (
     "그 답장",
     "그 초안",
     "그대로",
+    "그거",
+    "그걸",
+    "그것",
     "방금",
     "앞에",
     "이전",
     "아까",
     "해당",
+    "위에",
+    "위의",
+    "첫 번째",
+    "첫번째",
+    "두 번째",
+    "두번째",
+    "세 번째",
+    "세번째",
+    "네 번째",
+    "네번째",
+    "다섯 번째",
+    "다섯번째",
+    "1번",
+    "2번",
+    "3번",
+    "4번",
+    "5번",
 )
+
+ORDINAL_PATTERNS = re.compile(
+    r"(?:(?P<korean>첫|두|세|네|다섯)\s*번째)|"
+    r"(?:(?P<digit>\d+)\s*번(?:째)?)",
+)
+
+KOREAN_ORDINAL_MAP = {
+    "첫": 1,
+    "두": 2,
+    "세": 3,
+    "네": 4,
+    "다섯": 5,
+}
 
 MEMORY_CUE_PHRASES = (
     "기억해줘",
@@ -125,6 +170,9 @@ ACTION_LABELS = {
     "gmail_reply": "회신",
     "gmail_thread_reply": "thread 이어쓰기",
     "macos_note_create": "macOS 메모 생성",
+    "macos_reminder_create": "macOS 미리알림 추가",
+    "macos_volume_set": "macOS 볼륨 변경",
+    "macos_darkmode_toggle": "macOS 다크모드 전환",
 }
 
 GMAIL_COMPOSE_STOP_LABELS = (
@@ -193,6 +241,98 @@ CALENDAR_TITLE_STOP_TOKENS = {
 }
 CALENDAR_TITLE_NOISE_PATTERN = re.compile(r"[0-9:.-]+")
 GMAIL_REPLY_BODY_PREFIX_PATTERN = re.compile(r"^(?:답장\s*내용|회신\s*내용|내용|본문)\s*[:：-]?\s*", re.IGNORECASE)
+
+
+# ---------------------------------------------------------------------------
+# Summary/List 시간 범위 파싱
+# ---------------------------------------------------------------------------
+
+_SUMMARY_TIME_REFS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"오늘"), "today"),
+    (re.compile(r"내일"), "tomorrow"),
+    (re.compile(r"모레"), "day_after_tomorrow"),
+    (re.compile(r"이번\s*주"), "this_week"),
+    (re.compile(r"다음\s*주"), "next_week"),
+    (re.compile(r"지난\s*주|저번\s*주"), "last_week"),
+    (re.compile(r"이번\s*달"), "this_month"),
+    (re.compile(r"다음\s*달"), "next_month"),
+]
+
+
+def _parse_summary_time_range(message: str) -> tuple[str | None, str | None]:
+    """메시지에서 시간 참조를 파싱하여 (timeMin, timeMax) ISO 문자열을 반환한다."""
+    tz = ZoneInfo(settings.calendar_timezone if hasattr(settings, "calendar_timezone") else "Asia/Seoul")
+    now = datetime.now(tz)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    for pattern, ref_type in _SUMMARY_TIME_REFS:
+        if pattern.search(message) is None:
+            continue
+        if ref_type == "today":
+            return today_start.isoformat(), (today_start + timedelta(days=1)).isoformat()
+        elif ref_type == "tomorrow":
+            t = today_start + timedelta(days=1)
+            return t.isoformat(), (t + timedelta(days=1)).isoformat()
+        elif ref_type == "day_after_tomorrow":
+            t = today_start + timedelta(days=2)
+            return t.isoformat(), (t + timedelta(days=1)).isoformat()
+        elif ref_type == "this_week":
+            week_start = today_start - timedelta(days=now.weekday())
+            return week_start.isoformat(), (week_start + timedelta(days=7)).isoformat()
+        elif ref_type == "next_week":
+            week_start = today_start + timedelta(days=7 - now.weekday())
+            return week_start.isoformat(), (week_start + timedelta(days=7)).isoformat()
+        elif ref_type == "last_week":
+            week_start = today_start - timedelta(days=now.weekday() + 7)
+            return week_start.isoformat(), (week_start + timedelta(days=7)).isoformat()
+        elif ref_type == "this_month":
+            month_start = today_start.replace(day=1)
+            if now.month == 12:
+                month_end = month_start.replace(year=now.year + 1, month=1)
+            else:
+                month_end = month_start.replace(month=now.month + 1)
+            return month_start.isoformat(), month_end.isoformat()
+        elif ref_type == "next_month":
+            if now.month == 12:
+                month_start = today_start.replace(year=now.year + 1, month=1, day=1)
+            else:
+                month_start = today_start.replace(month=now.month + 1, day=1)
+            if month_start.month == 12:
+                month_end = month_start.replace(year=month_start.year + 1, month=1)
+            else:
+                month_end = month_start.replace(month=month_start.month + 1)
+            return month_start.isoformat(), month_end.isoformat()
+    return None, None
+
+
+def _build_gmail_search_query(message: str) -> str | None:
+    """Gmail 요약 쿼리에서 검색 조건을 추출한다."""
+    msg = re.sub(r"\s+", " ", message).strip().lower()
+    parts: list[str] = []
+
+    # 시간 참조
+    if "오늘" in msg:
+        parts.append("newer_than:1d")
+    elif "이번 주" in msg or "이번주" in msg:
+        parts.append("newer_than:7d")
+    elif "지난 주" in msg or "저번 주" in msg or "지난주" in msg or "저번주" in msg:
+        parts.append("newer_than:14d older_than:7d")
+    elif "이번 달" in msg or "이번달" in msg:
+        parts.append("newer_than:30d")
+    elif "최근" in msg:
+        parts.append("newer_than:3d")
+
+    # 발신자 참조
+    sender_match = re.search(r"(\S+)(?:에게서|한테서|로부터|가 보낸|이 보낸)", msg)
+    if sender_match:
+        parts.append(f"from:{sender_match.group(1)}")
+
+    # 키워드 참조
+    subject_match = re.search(r"(?:제목|주제|subject)[\s:：]*(\S+)", msg)
+    if subject_match:
+        parts.append(f'subject:"{subject_match.group(1)}"')
+
+    return " ".join(parts) if parts else None
 GMAIL_REPLY_BODY_SUFFIX_PATTERNS = (
     re.compile(r"\s*메일에\s*(?:이어서\s*)?답장해\s*줘\s*$"),
     re.compile(r"\s*메일에\s*회신해\s*줘\s*$"),
@@ -274,6 +414,17 @@ def _extract_rule_based_request(message: str, channel: str | None = None) -> Str
             missing_fields = ["title", "body"]
         else:
             note_payload = NoteExtractionPayload.model_validate(parsed)
+    elif intent == "calendar_summary":
+        time_min, time_max = _parse_summary_time_range(message)
+        if time_min or time_max:
+            calendar_payload = CalendarExtractionPayload(
+                searchTimeMin=time_min,
+                searchTimeMax=time_max,
+            )
+    elif intent == "gmail_summary":
+        search_query = _build_gmail_search_query(message)
+        if search_query:
+            mail_payload = MailExtractionPayload(searchQuery=search_query)
 
     return StructuredExtraction(
         rawMessage=message,
@@ -416,12 +567,24 @@ def _merge_structured_extraction(
 def apply_reference_context(
     extraction: StructuredExtraction,
     previous_extraction: StructuredExtraction | None,
+    last_candidates: list[dict[str, str]] | None = None,
 ) -> StructuredExtraction:
+    # 1. 순서 참조 ("두 번째", "1번") + 후보 목록이 있으면 후보 선택 적용
+    ordinal_idx = parse_ordinal_index(extraction.raw_message)
+    if ordinal_idx is not None and last_candidates and 0 <= ordinal_idx < len(last_candidates):
+        candidate = last_candidates[ordinal_idx]
+        candidate_label = candidate.get("label", candidate.get("raw", ""))
+        extraction = _apply_candidate_selection(extraction, candidate_label, ordinal_idx, previous_extraction)
+
     if previous_extraction is None:
         return extraction
 
     should_backfill = extraction.needs_clarification or bool(extraction.missing_fields) or _has_reference_signal(extraction.raw_message)
     if extraction.domain != previous_extraction.domain or not should_backfill:
+        # 도메인이 달라도 후보 선택이면 이전 도메인을 계승
+        if ordinal_idx is not None and last_candidates and extraction.domain in {"chat", "unknown"}:
+            extraction = _inherit_domain_from_previous(extraction, previous_extraction)
+            return extraction
         return extraction
 
     if extraction.domain == "calendar":
@@ -433,9 +596,116 @@ def apply_reference_context(
     return extraction
 
 
+def _apply_candidate_selection(
+    extraction: StructuredExtraction,
+    candidate_label: str,
+    index: int,
+    previous_extraction: StructuredExtraction | None,
+) -> StructuredExtraction:
+    """후보 선택 시 선택된 항목의 라벨을 extraction payload에 주입한다."""
+    ref = ExtractionReference(
+        referenceType="candidate_selection",
+        referenceId=str(index),
+        label=candidate_label,
+        score=0.9,
+    )
+    extraction.references = [ref] + list(extraction.references)
+    extraction.metadata = {
+        **dict(extraction.metadata),
+        "candidate_selected": True,
+        "candidate_index": index,
+        "candidate_label": candidate_label,
+    }
+
+    # 도메인별 payload에 후보 라벨 주입
+    if extraction.domain == "calendar" and extraction.calendar:
+        if not extraction.calendar.title or not extraction.calendar.search_title:
+            extraction.calendar.title = extraction.calendar.title or candidate_label
+            extraction.calendar.search_title = extraction.calendar.search_title or candidate_label
+    elif extraction.domain == "mail" and extraction.mail:
+        if not extraction.mail.subject:
+            extraction.mail.subject = candidate_label
+        if not extraction.mail.search_query:
+            extraction.mail.search_query = candidate_label
+    elif extraction.domain == "note" and extraction.note:
+        if not extraction.note.title:
+            extraction.note.title = candidate_label
+
+    # needs_clarification 해제
+    if extraction.needs_clarification:
+        extraction.needs_clarification = False
+        extraction.missing_fields = [f for f in extraction.missing_fields if f not in {"title", "subject", "target", "date_or_time"}]
+    return extraction
+
+
+def _inherit_domain_from_previous(
+    extraction: StructuredExtraction,
+    previous_extraction: StructuredExtraction,
+) -> StructuredExtraction:
+    """도메인이 chat/unknown이지만 이전 도메인을 계승하여 후보 선택을 완성한다."""
+    extraction.domain = previous_extraction.domain
+    extraction.action = previous_extraction.action
+    extraction.intent = previous_extraction.intent
+    extraction.confidence = max(extraction.confidence, 0.7)
+    return extraction
+
+
 def _has_reference_signal(message: str) -> bool:
     normalized = re.sub(r"\s+", " ", message).strip().lower()
     return any(hint in normalized for hint in REFERENCE_MESSAGE_HINTS)
+
+
+def parse_ordinal_index(message: str) -> int | None:
+    """메시지에서 순서 참조(1번, 두 번째 등)를 파싱해 0-based 인덱스를 반환한다."""
+    m = ORDINAL_PATTERNS.search(message)
+    if m is None:
+        return None
+    korean = m.group("korean")
+    if korean:
+        return KOREAN_ORDINAL_MAP.get(korean, 1) - 1
+    digit = m.group("digit")
+    if digit:
+        idx = int(digit)
+        if 1 <= idx <= 20:
+            return idx - 1
+    return None
+
+
+# ---------------------------------------------------------------------------
+# 어시스턴트 응답에서 후보 목록 추출
+# ---------------------------------------------------------------------------
+
+_NUMBERED_ITEM_PATTERN = re.compile(
+    r"^\s*(?:(?P<num>\d+)[.)\]]\s*|[-•]\s*)"
+    r"(?P<text>.+)$",
+    re.MULTILINE,
+)
+
+
+def extract_candidates_from_reply(reply: str, route: str) -> list[dict[str, str]]:
+    """어시스턴트 응답 텍스트에서 번호가 매겨진 항목 목록을 후보로 추출한다.
+
+    Returns:
+        [{"index": 0, "label": "...", "raw": "..."}, ...]
+    """
+    if route not in {"n8n", "n8n_fallback", "local_llm", "web_search"}:
+        return []
+
+    items = []
+    for m in _NUMBERED_ITEM_PATTERN.finditer(reply):
+        text = m.group("text").strip()
+        if len(text) < 3:
+            continue
+        items.append({
+            "index": len(items),
+            "label": text[:120],
+            "raw": text,
+        })
+
+    # 최소 2개 이상일 때만 후보 목록으로 취급
+    if len(items) < 2:
+        return []
+    return items[:20]
 
 
 def _reference_metadata(previous_extraction: StructuredExtraction, label: str | None = None) -> dict[str, object]:
@@ -677,6 +947,10 @@ def _mail_payload_to_compose_request(payload: MailExtractionPayload | None, inte
 
 
 def classify_message_intent(message: str) -> str:
+    _ensure_skills()
+    registry_result = classify_intent_from_registry(message)
+    if registry_result is not None:
+        return registry_result
     lowered = message.lower()
     has_calendar_keyword = any(keyword in lowered for keyword in CALENDAR_AUTOMATION_KEYWORDS)
     has_calendar_reference = CALENDAR_REFERENCE_PATTERN.search(message) is not None or TIME_FRAGMENT_PATTERN.search(message) is not None
@@ -711,6 +985,27 @@ def classify_message_intent(message: str) -> str:
         keyword in message for keyword in MACOS_NOTE_CREATE_KEYWORDS
     ):
         return "macos_note_create"
+
+    if any(keyword in lowered for keyword in MACOS_REMINDER_KEYWORDS) and any(
+        keyword in lowered for keyword in MACOS_REMINDER_CREATE_KEYWORDS
+    ):
+        return "macos_reminder_create"
+
+    if any(keyword in lowered for keyword in MACOS_VOLUME_KEYWORDS):
+        # "볼륨 확인"류는 get, 숫자가 있으면 set
+        if VOLUME_LEVEL_PATTERN.search(message):
+            return "macos_volume_set"
+        return "macos_volume_get"
+
+    if any(keyword in lowered for keyword in MACOS_DARKMODE_KEYWORDS):
+        return "macos_darkmode_toggle"
+
+    if any(keyword in lowered for keyword in MACOS_FINDER_KEYWORDS):
+        return "macos_finder_open"
+
+    if any(keyword in lowered for keyword in WEB_SEARCH_KEYWORDS):
+        return "web_search"
+
     return "chat"
 
 
@@ -745,6 +1040,43 @@ def extract_user_memory_candidates(message: str) -> list[dict[str, str]]:
 
 
 def process_message(
+    message: str,
+    channel: str,
+    session_id: str,
+    user_id: str | None = None,
+    intent_override: str | None = None,
+    approval_granted: bool = False,
+    structured_extraction: StructuredExtraction | None = None,
+    memory_context: list[dict[str, str]] | None = None,
+) -> dict[str, str | None]:
+    """메시지를 처리한다. LangGraph 워크플로가 사용 가능하면 우선 사용한다."""
+    try:
+        from app.graph.workflow import run_workflow
+        return run_workflow(
+            message=message,
+            channel=channel,
+            session_id=session_id,
+            user_id=user_id,
+            intent_override=intent_override,
+            approval_granted=approval_granted,
+            memory_context=memory_context,
+            structured_extraction=structured_extraction,
+        )
+    except Exception as exc:
+        logger.warning("LangGraph workflow failed, falling back to legacy: %s", exc)
+        return _process_message_legacy(
+            message=message,
+            channel=channel,
+            session_id=session_id,
+            user_id=user_id,
+            intent_override=intent_override,
+            approval_granted=approval_granted,
+            structured_extraction=structured_extraction,
+            memory_context=memory_context,
+        )
+
+
+def _process_message_legacy(
     message: str,
     channel: str,
     session_id: str,
@@ -887,6 +1219,113 @@ def process_message(
             "route": "macos_fallback",
             "action_type": intent,
         }
+
+    if intent == "macos_reminder_create":
+        parsed = parse_macos_reminder_request(message)
+        if parsed is None:
+            return {
+                "reply": "미리알림 요청을 이해하지 못했습니다. 예: 미리알림에 장보기 추가해줘",
+                "route": "validation_error",
+                "action_type": intent,
+            }
+        if not approval_granted:
+            return {
+                "reply": "macOS 미리알림 추가 요청입니다. 승인 후 실행합니다.",
+                "route": "approval_required",
+                "action_type": intent,
+            }
+        reply = run_macos_automation(message, channel, session_id, user_id, "macos/reminders", parsed)
+        if reply is not None:
+            return {"reply": reply, "route": "macos", "action_type": intent}
+        return {
+            "reply": "macOS 미리알림 실행에 실패했습니다. macOS runner 실행 상태를 확인하세요.",
+            "route": "macos_fallback",
+            "action_type": intent,
+        }
+
+    if intent == "macos_volume_get":
+        reply = run_macos_get("macos/system/volume")
+        if reply is not None:
+            return {"reply": reply, "route": "macos", "action_type": intent}
+        return {
+            "reply": "macOS 볼륨 확인에 실패했습니다. macOS runner 실행 상태를 확인하세요.",
+            "route": "macos_fallback",
+            "action_type": intent,
+        }
+
+    if intent == "macos_volume_set":
+        parsed = parse_macos_volume_set_request(message)
+        if parsed is None:
+            return {
+                "reply": "볼륨 값을 이해하지 못했습니다. 예: 볼륨 50으로 설정해줘",
+                "route": "validation_error",
+                "action_type": intent,
+            }
+        if not approval_granted:
+            return {
+                "reply": f"macOS 볼륨을 {parsed['level']}%로 변경하는 요청입니다. 승인 후 실행합니다.",
+                "route": "approval_required",
+                "action_type": intent,
+            }
+        reply = run_macos_automation(message, channel, session_id, user_id, "macos/system/volume", parsed)
+        if reply is not None:
+            return {"reply": reply, "route": "macos", "action_type": intent}
+        return {
+            "reply": "macOS 볼륨 변경에 실패했습니다. macOS runner 실행 상태를 확인하세요.",
+            "route": "macos_fallback",
+            "action_type": intent,
+        }
+
+    if intent == "macos_darkmode_toggle":
+        if not approval_granted:
+            return {
+                "reply": "macOS 다크모드 전환 요청입니다. 승인 후 실행합니다.",
+                "route": "approval_required",
+                "action_type": intent,
+            }
+        reply = run_macos_automation(message, channel, session_id, user_id, "macos/system/darkmode", {})
+        if reply is not None:
+            return {"reply": reply, "route": "macos", "action_type": intent}
+        return {
+            "reply": "macOS 다크모드 전환에 실패했습니다. macOS runner 실행 상태를 확인하세요.",
+            "route": "macos_fallback",
+            "action_type": intent,
+        }
+
+    if intent == "macos_finder_open":
+        parsed = parse_macos_finder_open_request(message)
+        if parsed is None:
+            return {
+                "reply": "Finder에서 열 경로를 이해하지 못했습니다. 예: ~/Documents 폴더 열어줘",
+                "route": "validation_error",
+                "action_type": intent,
+            }
+        reply = run_macos_automation(message, channel, session_id, user_id, "macos/finder/open", parsed)
+        if reply is not None:
+            return {"reply": reply, "route": "macos", "action_type": intent}
+        return {
+            "reply": "Finder 폴더 열기에 실패했습니다. macOS runner 실행 상태를 확인하세요.",
+            "route": "macos_fallback",
+            "action_type": intent,
+        }
+
+    if intent == "web_search":
+        from app.search import run_web_search, format_search_results_for_llm
+
+        search_result = run_web_search(message)
+        if search_result.get("error"):
+            # 검색 불가 시 로컬 LLM에 직접 위임
+            reply, route = generate_local_reply(message, channel, memory_context)
+            return {"reply": reply, "route": route, "action_type": None}
+        context_text = format_search_results_for_llm(search_result)
+        search_memory = [{"category": "search_context", "content": context_text, "source": "web_search"}]
+        combined_memory = (memory_context or []) + search_memory
+        reply, route = generate_local_reply(
+            f"다음 검색 결과를 바탕으로 사용자 질문에 답변해줘.\n\n{context_text}\n\n사용자 질문: {message}",
+            channel,
+            combined_memory,
+        )
+        return {"reply": reply, "route": "web_search", "action_type": "web_search"}
 
     reply, route = generate_local_reply(message, channel, memory_context)
     return {"reply": reply, "route": route, "action_type": None}
@@ -1146,6 +1585,98 @@ def parse_macos_note_request(message: str) -> dict[str, str] | None:
     if folder:
         result["folder"] = folder
     return result
+
+
+def parse_macos_reminder_request(message: str) -> dict[str, str] | None:
+    """미리알림 요청에서 이름/메모/목록 세그먼트를 추출한다."""
+    action_stop = (*MACOS_REMINDER_CREATE_KEYWORDS, *MACOS_NOTE_ACTION_STOP_LABELS, "추가해줘", "추가해 줘", "등록해줘", "만들어줘")
+    name = _extract_labeled_segment(
+        message,
+        labels=("이름", "name", "제목", "title"),
+        stop_labels=("메모", "노트", "note", "목록", "list", *action_stop),
+    )
+    # 라벨이 없으면 미리알림 키워드와 액션 키워드 사이의 텍스트를 이름으로 간주
+    if not name:
+        lowered = message.lower()
+        # 미리알림 키워드 뒤, 액션 키워드 앞 사이의 텍스트
+        for rk in MACOS_REMINDER_KEYWORDS:
+            rk_lower = rk.lower()
+            if rk_lower in lowered:
+                start = lowered.index(rk_lower) + len(rk_lower)
+                tail = message[start:].strip()
+                # 조사 제거
+                tail = re.sub(r"^[에의으로]\s*", "", tail)
+                # 액션 키워드 앞까지
+                for ak in MACOS_REMINDER_CREATE_KEYWORDS:
+                    ak_idx = tail.find(ak)
+                    if ak_idx > 0:
+                        tail = tail[:ak_idx].strip()
+                        break
+                tail = tail.rstrip("해줘 줘요 해 요 좀 부탁")
+                if tail:
+                    name = tail
+                    break
+    if not name:
+        return None
+    note = _extract_labeled_segment(
+        message,
+        labels=("메모", "노트", "note"),
+        stop_labels=("목록", "list", *action_stop),
+    ) or ""
+    list_name = _extract_labeled_segment(
+        message,
+        labels=("목록", "list"),
+        stop_labels=action_stop,
+    ) or "Reminders"
+    return {"name": name, "note": note, "list_name": list_name}
+
+
+def parse_macos_volume_set_request(message: str) -> dict[str, int] | None:
+    """볼륨 설정 요청에서 레벨(0-100)을 추출한다."""
+    match = VOLUME_LEVEL_PATTERN.search(message)
+    if not match:
+        return None
+    level = int(match.group(1))
+    if level < 0 or level > 100:
+        return None
+    return {"level": level}
+
+
+def parse_macos_finder_open_request(message: str) -> dict[str, str] | None:
+    """Finder 열기 요청에서 경로를 추출한다."""
+    path = _extract_labeled_segment(
+        message,
+        labels=("경로", "path"),
+        stop_labels=("폴더", *MACOS_NOTE_ACTION_STOP_LABELS),
+    )
+    if path:
+        if ".." in path:
+            return None
+        return {"path": path}
+    # ~/xxx 또는 /xxx 패턴 탐색
+    path_match = re.search(r"((?:~|/)[^\s,]+)", message)
+    if path_match:
+        candidate = path_match.group(1)
+        if ".." in candidate:
+            return None
+        return {"path": candidate}
+    return None
+
+
+def run_macos_get(endpoint_path: str) -> str | None:
+    """macOS runner GET 엔드포인트를 호출한다."""
+    endpoint = f"{settings.macos_automation_base_url.rstrip('/')}/{endpoint_path.lstrip('/')}"
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(endpoint)
+            response.raise_for_status()
+        body = response.json()
+        if isinstance(body, dict):
+            if isinstance(body.get("reply"), str) and body["reply"].strip():
+                return body["reply"].strip()
+        return "macOS 정보를 조회했습니다."
+    except Exception:
+        return None
 
 
 def _extract_base_date(message: str):

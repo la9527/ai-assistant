@@ -47,7 +47,10 @@ def _build_structured_extraction_prompt(intent: str) -> str:
         "calendar, mail, note 는 객체 또는 null 만 허용된다. references 는 배열만 허용된다. metadata 는 객체만 허용된다. "
         "normalizedMessage는 원문 의미를 유지한 정규화 문자열로 작성하고, 오타로 바꾸지 마라. "
         "calendar_create는 title, startAt, endAt 이 중요하다. calendar_update는 기존 일정 검색용 searchTitle/searchTimeMin/searchTimeMax 와 새 시간 startAt/endAt 을 함께 채운다. "
-        "calendar_delete는 searchTitle, searchTimeMin, searchTimeMax 를 채운다. gmail_reply는 body와 searchQuery 또는 threadReference/messageReference 중 하나가 중요하다. "
+        "calendar_delete는 searchTitle, searchTimeMin, searchTimeMax 를 채운다. "
+        "calendar_summary는 조회 범위인 searchTimeMin/searchTimeMax 가 중요하다. '오늘 일정'이면 오늘 0시~내일 0시, '이번 주'면 월요일~일요일, '내일'이면 내일 0시~모레 0시를 ISO 형식으로 채운다. searchTitle이 언급되면 함께 채운다. "
+        "gmail_summary는 searchQuery 가 중요하다. '오늘 메일'이면 newer_than:1d, '이번 주'면 newer_than:7d, '최근 메일'이면 newer_than:3d 를 넣는다. 발신자, 제목이 언급되면 from:, subject: 를 추가한다. "
+        "gmail_reply는 body와 searchQuery 또는 threadReference/messageReference 중 하나가 중요하다. "
         "답장 본문 body에는 '메일에 답장해줘' 같은 작업 지시문을 넣지 말고 실제 답장 내용만 남겨라. "
         "정보가 부족하면 needsClarification=true 와 missingFields를 채워라. 위험 작업은 approvalRequired=true 를 유지하라."
     )
@@ -224,11 +227,54 @@ def generate_local_reply(
             raise ValueError("empty response")
         return reply, "local_llm"
     except Exception:
+        ext = settings.external_llm
+        if ext.enabled and ext.fallback_only:
+            ext_reply, ext_route = generate_external_reply(message, channel, memory_context)
+            if ext_route == "external_llm":
+                return ext_reply, ext_route
         fallback = (
             "현재 로컬 LLM 응답을 가져오지 못했습니다. "
             f"channel={channel}, provider={settings.local_llm.provider}, model={settings.local_llm.model}"
         )
         return fallback, "fallback"
+
+
+def generate_external_reply(
+    message: str,
+    channel: str,
+    memory_context: list[dict[str, str]] | None = None,
+) -> tuple[str, str]:
+    """외부 LLM(OpenAI/Claude 등)을 통해 응답을 생성한다."""
+    ext = settings.external_llm
+    if not ext.enabled or not ext.api_key:
+        return "외부 LLM이 설정되지 않았습니다.", "fallback"
+
+    endpoint = f"{ext.base_url.rstrip('/')}/chat/completions"
+    messages = _build_local_reply_messages(message, channel, memory_context)
+    payload = {
+        "model": ext.model,
+        "messages": messages,
+        "temperature": 0.3,
+    }
+    headers = {
+        "Authorization": f"Bearer {ext.api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        with httpx.Client(timeout=ext.timeout_seconds) as client:
+            response = client.post(endpoint, json=payload, headers=headers)
+            response.raise_for_status()
+        body = response.json()
+        reply = _normalize_reply_text(body["choices"][0]["message"]["content"])
+        if not reply:
+            raise ValueError("empty response")
+        return reply, "external_llm"
+    except Exception:
+        return (
+            "외부 LLM 응답을 가져오지 못했습니다. "
+            f"provider={ext.provider}, model={ext.model}"
+        ), "fallback"
 
 
 def _strip_json_fence(text: str) -> str:

@@ -25,6 +25,7 @@ import httpx
 
 from app.automation import classify_message_intent
 from app.automation import apply_reference_context
+from app.automation import extract_candidates_from_reply
 from app.automation import extract_user_memory_candidates
 from app.automation import extract_structured_request
 from app.automation import process_message
@@ -93,6 +94,49 @@ from app.schemas import UserMemoryUpdateRequest
 app = FastAPI(title="AI Assistant API", version="0.1.0")
 
 logger = logging.getLogger("uvicorn.error")
+
+# ---------------------------------------------------------------------------
+# Rate Limiting (slowapi)
+# ---------------------------------------------------------------------------
+try:
+    from slowapi import Limiter, _rate_limit_exceeded_handler
+    from slowapi.util import get_remote_address
+    from slowapi.errors import RateLimitExceeded
+
+    limiter = Limiter(key_func=get_remote_address, default_limits=[settings.rate_limit_default])
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    _limiter_available = True
+except ImportError:
+    _limiter_available = False
+
+# ---------------------------------------------------------------------------
+# API Key Authentication Middleware
+# ---------------------------------------------------------------------------
+# API_KEY 가 설정되면 아래 경로를 제외한 모든 요청에 X-API-Key 헤더 검증
+_AUTH_EXEMPT_PREFIXES = (
+    "/api/health",
+    "/api/kakao/",
+    "/api/slack/",
+    "/docs",
+    "/openapi.json",
+    "/health",
+)
+
+
+@app.middleware("http")
+async def api_key_auth_middleware(request: Request, call_next):
+    if settings.api_key:
+        path = request.url.path
+        if not any(path.startswith(prefix) for prefix in _AUTH_EXEMPT_PREFIXES):
+            provided = request.headers.get("X-API-Key", "")
+            if not hmac.compare_digest(provided, settings.api_key):
+                return Response(
+                    content=json.dumps({"detail": "Invalid or missing API key"}),
+                    status_code=401,
+                    media_type="application/json",
+                )
+    return await call_next(request)
 
 ADMIN_SESSION_COOKIE = "ai_assistant_admin_session"
 ADMIN_SESSION_SECRET = settings.resolved_admin_session_secret
@@ -799,9 +843,10 @@ def _build_structured_payload(
     channel: str,
     history: list[dict[str, str]] | None = None,
     previous_extraction: StructuredExtraction | None = None,
+    last_candidates: list[dict[str, str]] | None = None,
 ) -> StructuredExtraction:
     extraction = extract_structured_request(message, channel, history)
-    return apply_reference_context(extraction, previous_extraction)
+    return apply_reference_context(extraction, previous_extraction, last_candidates)
 
 
 def _load_previous_extraction(db: Session, session_id: str) -> StructuredExtraction | None:
@@ -813,6 +858,13 @@ def _load_previous_extraction(db: Session, session_id: str) -> StructuredExtract
     except Exception:
         logger.warning("Failed to validate last extraction for session_id=%s", session_id)
         return None
+
+
+def _load_last_candidates(db: Session, session_id: str) -> list[dict[str, str]] | None:
+    state = get_session_state(db, session_id)
+    if state is None or not state.last_candidates:
+        return None
+    return state.last_candidates
 
 
 def _match_pending_ticket_command(db: Session, session_id: str, message: str) -> tuple[str, str] | None:
@@ -886,12 +938,17 @@ def _record_assistant_message(
         route=route,
         message_meta=message_meta or None,
     )
+
+    # 응답에서 번호 목록이 있으면 후보로 저장 (후보 선택형 후속 대화 지원)
+    reply_candidates = extract_candidates_from_reply(reply, route)
+
     upsert_session_state(
         db,
         session_id=session_id,
         last_route=route,
         pending_action=action_type if route == "approval_required" else None,
         pending_ticket_id=approval_ticket_id if route == "approval_required" else None,
+        last_candidates=reply_candidates or None,
         state_data={"last_assistant_reply": reply},
     )
 
@@ -917,6 +974,7 @@ def _process_kakao_message(
         "kakao",
         _session_history_context(db, session.id),
         _load_previous_extraction(db, session.id),
+        last_candidates=_load_last_candidates(db, session.id),
     )
     memory_context = _load_user_memory_context(db, internal_user_id)
     _record_user_message(db, session, "kakao", utterance, structured)
@@ -1037,6 +1095,27 @@ def startup() -> None:
     if _admin_auth_enabled() and not settings.admin_session_secret:
         logger.warning("ADMIN_SESSION_SECRET is not set; using an ephemeral in-memory secret for admin sessions")
     warm_local_llm()
+    # MCP 서버 비동기 초기화
+    if settings.mcp_servers:
+        import asyncio
+        from app.mcp.client import MCPServerConfig, initialize_mcp_servers
+        from app.mcp.registry import register_mcp_tools
+        configs = [MCPServerConfig(**s) for s in settings.mcp_servers]
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(_init_mcp(configs))
+            else:
+                loop.run_until_complete(_init_mcp(configs))
+        except Exception:
+            logger.warning("MCP 서버 초기화를 건너뜁니다 — 비동기 루프 없음")
+
+
+async def _init_mcp(configs: list) -> None:
+    from app.mcp.client import initialize_mcp_servers
+    from app.mcp.registry import register_mcp_tools
+    manager = await initialize_mcp_servers(configs)
+    register_mcp_tools(manager)
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -1228,7 +1307,16 @@ def delete_user_memory_api(
 
 
 @app.post("/api/chat", response_model=ChatResponse)
-def chat(payload: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
+def chat(payload: ChatRequest, request: Request, db: Session = Depends(get_db)) -> ChatResponse:
+    return _chat_impl(payload, db)
+
+
+# slowapi 데코레이터는 런타임에 적용
+if _limiter_available:
+    chat = limiter.limit(settings.rate_limit_chat)(chat)
+
+
+def _chat_impl(payload: ChatRequest, db: Session) -> ChatResponse:
     internal_user_id = _resolve_internal_user_id(db, payload.channel, payload.user_id)
     memory_context = _load_user_memory_context(db, internal_user_id)
     approval_command = _match_approval_command(payload.message)
@@ -1262,6 +1350,7 @@ def chat(payload: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
         payload.channel,
         _session_history_context(db, session.id),
         _load_previous_extraction(db, session.id),
+        last_candidates=_load_last_candidates(db, session.id),
     )
     _record_user_message(db, session, payload.channel, payload.message, structured)
 
@@ -1354,6 +1443,60 @@ async def browser_read(payload: BrowserReadRequest, db: Session = Depends(get_db
         contentExcerpt=str(data["contentExcerpt"]),
         fetchedAt=data["fetchedAt"],
     )
+
+
+@app.post("/api/browser/screenshot")
+async def browser_screenshot(payload: dict):
+    """브라우저로 페이지 스크린샷을 찍어 base64 이미지를 반환한다."""
+    url = payload.get("url")
+    if not url:
+        raise HTTPException(status_code=400, detail="url is required")
+
+    request_body = {
+        "url": url,
+        "timeoutMs": payload.get("timeoutMs", 15000),
+        "fullPage": payload.get("fullPage", False),
+        "viewportWidth": payload.get("viewportWidth", 1280),
+        "viewportHeight": payload.get("viewportHeight", 720),
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{settings.browser_runner_base_url.rstrip('/')}/browse/screenshot",
+                json=request_body,
+            )
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"browser runner unavailable: {exc}") from exc
+
+    return response.json()
+
+
+@app.post("/api/browser/search")
+async def browser_search(payload: dict):
+    """브라우저 기반 Google 검색 결과를 반환한다."""
+    query = payload.get("query")
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+
+    request_body = {
+        "query": query,
+        "maxResults": payload.get("maxResults", 5),
+        "timeoutMs": payload.get("timeoutMs", 20000),
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{settings.browser_runner_base_url.rstrip('/')}/browse/search",
+                json=request_body,
+            )
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"browser runner unavailable: {exc}") from exc
+
+    return response.json()
 
 
 @app.post("/api/slack/events")
@@ -1664,6 +1807,28 @@ def get_task(task_id: str, db: Session = Depends(get_db)) -> TaskResponse:
     )
 
 
+@app.post("/api/tasks/async")
+def publish_async_task(body: dict):
+    """비동기 작업을 Worker 큐에 발행한다."""
+    from app.tasks import publish_task
+    task_type = body.get("type", "chat")
+    payload = body.get("payload", {})
+    task_id = publish_task(task_type, payload)
+    if task_id is None:
+        raise HTTPException(status_code=503, detail="Worker 큐를 사용할 수 없습니다. Redis 연결을 확인하세요.")
+    return {"task_id": task_id, "status": "queued"}
+
+
+@app.get("/api/tasks/async/{task_id}")
+def get_async_task_result(task_id: str):
+    """Worker가 처리한 비동기 작업 결과를 조회한다."""
+    from app.tasks import get_task_result
+    result = get_task_result(task_id)
+    if result is None:
+        return {"task_id": task_id, "status": "pending"}
+    return {"task_id": task_id, **result}
+
+
 @app.post("/api/actions/request-approval", response_model=ApprovalTicketResponse)
 def request_approval(session_id: str | None = None, db: Session = Depends(get_db)) -> ApprovalTicketResponse:
     ticket = create_approval_ticket(db, session_id=session_id, action_type="manual_approval")
@@ -1758,6 +1923,7 @@ def _execute_pending_ticket(ticket: ApprovalTicket, db: Session) -> tuple[str | 
             session.channel,
             _session_history_context(db, session.id),
             _load_previous_extraction(db, session.id),
+            last_candidates=_load_last_candidates(db, session.id),
         ),
         memory_context=_load_user_memory_context(db, session.user_id),
     )
@@ -1795,6 +1961,7 @@ def _process_slack_message(
         "slack",
         _session_history_context(db, session.id),
         _load_previous_extraction(db, session.id),
+        last_candidates=_load_last_candidates(db, session.id),
     )
     memory_context = _load_user_memory_context(db, internal_user_id)
     _record_user_message(db, session, "slack", message, structured)

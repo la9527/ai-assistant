@@ -1,0 +1,432 @@
+"""LangGraph 노드 함수 — 기존 automation.py 로직을 노드 단위로 분리."""
+
+from __future__ import annotations
+
+from app.automation import (
+    ACTION_LABELS,
+    _calendar_payload_to_request,
+    _mail_payload_to_compose_request,
+    _mail_payload_to_reply_request,
+    extract_structured_request,
+    parse_calendar_request,
+    parse_gmail_compose_request,
+    parse_gmail_reply_request,
+    parse_macos_finder_open_request,
+    parse_macos_note_request,
+    parse_macos_reminder_request,
+    parse_macos_volume_set_request,
+    run_macos_automation,
+    run_macos_get,
+    run_n8n_automation,
+)
+from app.config import settings
+from app.graph.state import AssistantState
+from app.llm import generate_local_reply
+
+
+# ---------------------------------------------------------------------------
+# 1. classify — 의도 분류 + 구조화 추출
+# ---------------------------------------------------------------------------
+
+def classify(state: AssistantState) -> dict:
+    pre_built = state.get("structured_extraction")
+    if pre_built is not None:
+        extraction = pre_built
+    else:
+        extraction = extract_structured_request(state["message"], state.get("channel"))
+    intent = state.get("intent_override") or extraction.intent
+    return {"extraction": extraction, "intent": intent}
+
+
+# ---------------------------------------------------------------------------
+# 2. validate — 파라미터 파싱 + 검증
+# ---------------------------------------------------------------------------
+
+def validate(state: AssistantState) -> dict:
+    intent = state["intent"]
+    extraction = state.get("extraction")
+    message = state["message"]
+
+    if intent in {"calendar_create", "calendar_update", "calendar_delete"}:
+        parsed = (
+            _calendar_payload_to_request(extraction.calendar, intent)
+            if extraction and extraction.calendar
+            else parse_calendar_request(message, intent)
+        )
+        if parsed is None:
+            example = (
+                "내일 오후 3시에 치과 일정 추가해줘"
+                if intent == "calendar_create"
+                else "내일 오후 4시 치과 일정 변경해줘"
+                if intent == "calendar_update"
+                else "오늘 06:00-07:00 피자 시키기 일정 삭제해줘"
+            )
+            guidance = "삭제할 일정의 제목이나 시간을 더 구체적으로 알려주세요. " if intent == "calendar_delete" else ""
+            return {
+                "parsed_params": None,
+                "reply": f"일정 요청을 이해하지 못했습니다. {guidance}예: {example}",
+                "route": "validation_error",
+                "action_type": intent,
+            }
+        return {"parsed_params": parsed}
+
+    if intent in {"gmail_draft", "gmail_send"}:
+        parsed = (
+            _mail_payload_to_compose_request(extraction.mail, intent)
+            if extraction and extraction.mail
+            else parse_gmail_compose_request(message, intent)
+        )
+        if parsed is None:
+            return {
+                "parsed_params": None,
+                "reply": "메일 작성 요청을 이해하지 못했습니다. 예: test@example.com로 제목 주간 보고, 내용 오늘 작업 완료 메일 초안 작성해줘",
+                "route": "validation_error",
+                "action_type": intent,
+            }
+        return {"parsed_params": parsed}
+
+    if intent in {"gmail_reply", "gmail_thread_reply"}:
+        parsed = (
+            _mail_payload_to_reply_request(extraction.mail, intent)
+            if extraction and extraction.mail
+            else parse_gmail_reply_request(message, intent)
+        )
+        if parsed is None:
+            return {
+                "parsed_params": None,
+                "reply": "메일 회신 요청을 이해하지 못했습니다. 예: 제목 AI Assistant Gmail 발송 테스트 내용 확인했습니다 메일에 답장해줘",
+                "route": "validation_error",
+                "action_type": intent,
+            }
+        return {"parsed_params": parsed}
+
+    if intent == "macos_note_create":
+        parsed = parse_macos_note_request(message)
+        if parsed is None:
+            return {
+                "parsed_params": None,
+                "reply": "macOS 메모 요청을 이해하지 못했습니다. 예: 메모에 제목 주간 점검 내용 브라우저 러너와 Slack 상태 확인 저장해줘",
+                "route": "validation_error",
+                "action_type": intent,
+            }
+        return {"parsed_params": parsed}
+
+    if intent == "macos_reminder_create":
+        parsed = parse_macos_reminder_request(message)
+        if parsed is None:
+            return {
+                "parsed_params": None,
+                "reply": "미리알림 요청을 이해하지 못했습니다. 예: 미리알림에 장보기 추가해줘",
+                "route": "validation_error",
+                "action_type": intent,
+            }
+        return {"parsed_params": parsed}
+
+    if intent == "macos_volume_set":
+        parsed = parse_macos_volume_set_request(message)
+        if parsed is None:
+            return {
+                "parsed_params": None,
+                "reply": "볼륨 값을 이해하지 못했습니다. 예: 볼륨 50으로 설정해줘",
+                "route": "validation_error",
+                "action_type": intent,
+            }
+        return {"parsed_params": parsed}
+
+    if intent == "macos_finder_open":
+        parsed = parse_macos_finder_open_request(message)
+        if parsed is None:
+            return {
+                "parsed_params": None,
+                "reply": "Finder에서 열 경로를 이해하지 못했습니다. 예: ~/Documents 폴더 열어줘",
+                "route": "validation_error",
+                "action_type": intent,
+            }
+        return {"parsed_params": parsed}
+
+    # calendar_summary, gmail_summary, chat, macos_volume_get, macos_darkmode_toggle — 파라미터 불필요
+    return {"parsed_params": None}
+
+
+# ---------------------------------------------------------------------------
+# 3. check_approval — 승인 필요 여부 확인
+# ---------------------------------------------------------------------------
+
+def check_approval(state: AssistantState) -> dict:
+    intent = state["intent"]
+    if intent not in ACTION_LABELS:
+        return {}
+    if state.get("approval_granted"):
+        return {}
+    action_label = ACTION_LABELS[intent]
+    domain_label = {
+        "calendar": "일정",
+        "gmail": "메일",
+        "macos_note": "macOS 메모",
+        "macos_reminder": "macOS 미리알림",
+        "macos_volume": "macOS 볼륨",
+        "macos_darkmode": "macOS 테마",
+    }
+    prefix = domain_label.get(intent.rsplit("_", 1)[0], "")
+    reply_text = f"{prefix} {action_label} 요청입니다. 승인 후 실행합니다." if prefix else f"{action_label} 요청입니다. 승인 후 실행합니다."
+    if intent == "macos_note_create":
+        reply_text = "macOS 메모 생성 요청입니다. 승인 후 AppleScript로 실행합니다."
+    return {
+        "reply": reply_text,
+        "route": "approval_required",
+        "action_type": intent,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 4. execute — 실행 노드들
+# ---------------------------------------------------------------------------
+
+def execute_calendar_summary(state: AssistantState) -> dict:
+    message, channel = state["message"], state.get("channel", "")
+    session_id, user_id = state.get("session_id", ""), state.get("user_id")
+    memory_context = state.get("memory_context")
+    extraction = state.get("extraction")
+
+    extra_payload: dict[str, str] | None = None
+    if extraction and extraction.calendar:
+        cal = extraction.calendar
+        extra = {}
+        if cal.search_time_min:
+            extra["searchTimeMin"] = cal.search_time_min
+        if cal.search_time_max:
+            extra["searchTimeMax"] = cal.search_time_max
+        if cal.search_title:
+            extra["searchTitle"] = cal.search_title
+        if extra:
+            extra_payload = extra
+
+    if settings.n8n_webhook_path:
+        reply = run_n8n_automation(message, channel, session_id, user_id, settings.n8n_webhook_path, extra_payload)
+        if reply is not None:
+            return {"reply": reply, "route": "n8n", "action_type": None}
+    fallback_reply, _ = generate_local_reply(message, channel, memory_context)
+    return {"reply": fallback_reply, "route": "n8n_fallback", "action_type": None}
+
+
+def execute_calendar_write(state: AssistantState) -> dict:
+    intent = state["intent"]
+    message, channel = state["message"], state.get("channel", "")
+    session_id, user_id = state.get("session_id", ""), state.get("user_id")
+    parsed = state.get("parsed_params")
+
+    webhook_path = {
+        "calendar_create": settings.n8n_calendar_create_webhook_path,
+        "calendar_update": settings.n8n_calendar_update_webhook_path,
+        "calendar_delete": settings.n8n_calendar_delete_webhook_path,
+    }[intent]
+    reply = run_n8n_automation(message, channel, session_id, user_id, webhook_path, parsed)
+    if reply is not None:
+        return {"reply": reply, "route": "n8n", "action_type": intent}
+    return {
+        "reply": "승인된 일정 작업 실행에 실패했습니다. n8n workflow 또는 자격 증명을 확인하세요.",
+        "route": "n8n_fallback",
+        "action_type": intent,
+    }
+
+
+def execute_gmail_compose(state: AssistantState) -> dict:
+    intent = state["intent"]
+    message, channel = state["message"], state.get("channel", "")
+    session_id, user_id = state.get("session_id", ""), state.get("user_id")
+    parsed = state.get("parsed_params")
+
+    webhook_path = (
+        settings.n8n_gmail_draft_webhook_path
+        if intent == "gmail_draft"
+        else settings.n8n_gmail_send_webhook_path
+    )
+    reply = run_n8n_automation(message, channel, session_id, user_id, webhook_path, parsed)
+    if reply is not None:
+        return {"reply": reply, "route": "n8n", "action_type": intent}
+    return {
+        "reply": "승인된 메일 작업 실행에 실패했습니다. n8n Gmail workflow 또는 credential 연결 상태를 확인하세요.",
+        "route": "n8n_fallback",
+        "action_type": intent,
+    }
+
+
+def execute_gmail_reply(state: AssistantState) -> dict:
+    intent = state["intent"]
+    message, channel = state["message"], state.get("channel", "")
+    session_id, user_id = state.get("session_id", ""), state.get("user_id")
+    parsed = state.get("parsed_params")
+
+    reply = run_n8n_automation(message, channel, session_id, user_id, settings.n8n_gmail_reply_webhook_path, parsed)
+    if reply is not None:
+        return {"reply": reply, "route": "n8n", "action_type": intent}
+    return {
+        "reply": "승인된 메일 회신 실행에 실패했습니다. n8n Gmail reply workflow 또는 credential 연결 상태를 확인하세요.",
+        "route": "n8n_fallback",
+        "action_type": intent,
+    }
+
+
+def execute_gmail_summary(state: AssistantState) -> dict:
+    message, channel = state["message"], state.get("channel", "")
+    session_id, user_id = state.get("session_id", ""), state.get("user_id")
+    extraction = state.get("extraction")
+
+    extra_payload: dict[str, str] | None = None
+    if extraction and extraction.mail and extraction.mail.search_query:
+        extra_payload = {"searchQuery": extraction.mail.search_query}
+
+    if settings.n8n_gmail_webhook_path:
+        reply = run_n8n_automation(message, channel, session_id, user_id, settings.n8n_gmail_webhook_path, extra_payload)
+        if reply is not None:
+            return {"reply": reply, "route": "n8n", "action_type": None}
+    return {
+        "reply": "Gmail 자동화를 실행하지 못했습니다. n8n Gmail credential 연결 상태를 확인하세요.",
+        "route": "n8n_fallback",
+        "action_type": None,
+    }
+
+
+def execute_macos_note(state: AssistantState) -> dict:
+    message, channel = state["message"], state.get("channel", "")
+    session_id, user_id = state.get("session_id", ""), state.get("user_id")
+    parsed = state.get("parsed_params")
+
+    reply = run_macos_automation(message, channel, session_id, user_id, "macos/notes", parsed)
+    if reply is not None:
+        return {"reply": reply, "route": "macos", "action_type": "macos_note_create"}
+    return {
+        "reply": "승인된 macOS 메모 실행에 실패했습니다. 호스트 macOS runner 실행 상태와 Notes 자동화 권한을 확인하세요.",
+        "route": "macos_fallback",
+        "action_type": "macos_note_create",
+    }
+
+
+def execute_chat(state: AssistantState) -> dict:
+    message, channel = state["message"], state.get("channel", "")
+    memory_context = state.get("memory_context")
+    reply, route = generate_local_reply(message, channel, memory_context)
+    return {"reply": reply, "route": route, "action_type": None}
+
+
+def execute_mcp_tool(state: AssistantState) -> dict:
+    """MCP 도구를 호출하는 실행 노드."""
+    from app.mcp.client import call_mcp_tool_sync
+    from app.skills.registry import get_skill_by_id
+
+    intent = state["intent"]
+    parsed = state.get("parsed_params") or {}
+
+    skill = get_skill_by_id(intent)
+    if skill is None or skill.executor_type != "mcp":
+        return {
+            "reply": f"MCP 도구를 찾을 수 없습니다: {intent}",
+            "route": "mcp_error",
+            "action_type": intent,
+        }
+
+    # executor_ref: "server_name/tool_name"
+    parts = skill.executor_ref.split("/", 1)
+    tool_name = parts[1] if len(parts) > 1 else skill.executor_ref
+
+    try:
+        reply = call_mcp_tool_sync(tool_name, parsed if parsed else None)
+        return {"reply": reply, "route": "mcp", "action_type": intent}
+    except Exception as exc:
+        return {
+            "reply": f"MCP 도구 실행 실패: {exc}",
+            "route": "mcp_error",
+            "action_type": intent,
+        }
+
+
+def execute_macos_reminder(state: AssistantState) -> dict:
+    message, channel = state["message"], state.get("channel", "")
+    session_id, user_id = state.get("session_id", ""), state.get("user_id")
+    parsed = state.get("parsed_params")
+
+    reply = run_macos_automation(message, channel, session_id, user_id, "macos/reminders", parsed)
+    if reply is not None:
+        return {"reply": reply, "route": "macos", "action_type": "macos_reminder_create"}
+    return {
+        "reply": "macOS 미리알림 실행에 실패했습니다. macOS runner 실행 상태를 확인하세요.",
+        "route": "macos_fallback",
+        "action_type": "macos_reminder_create",
+    }
+
+
+def execute_macos_volume_get(state: AssistantState) -> dict:
+    reply = run_macos_get("macos/system/volume")
+    if reply is not None:
+        return {"reply": reply, "route": "macos", "action_type": "macos_volume_get"}
+    return {
+        "reply": "macOS 볼륨 확인에 실패했습니다. macOS runner 실행 상태를 확인하세요.",
+        "route": "macos_fallback",
+        "action_type": "macos_volume_get",
+    }
+
+
+def execute_macos_volume_set(state: AssistantState) -> dict:
+    message, channel = state["message"], state.get("channel", "")
+    session_id, user_id = state.get("session_id", ""), state.get("user_id")
+    parsed = state.get("parsed_params")
+
+    reply = run_macos_automation(message, channel, session_id, user_id, "macos/system/volume", parsed)
+    if reply is not None:
+        return {"reply": reply, "route": "macos", "action_type": "macos_volume_set"}
+    return {
+        "reply": "macOS 볼륨 변경에 실패했습니다. macOS runner 실행 상태를 확인하세요.",
+        "route": "macos_fallback",
+        "action_type": "macos_volume_set",
+    }
+
+
+def execute_macos_darkmode(state: AssistantState) -> dict:
+    message, channel = state["message"], state.get("channel", "")
+    session_id, user_id = state.get("session_id", ""), state.get("user_id")
+
+    reply = run_macos_automation(message, channel, session_id, user_id, "macos/system/darkmode", {})
+    if reply is not None:
+        return {"reply": reply, "route": "macos", "action_type": "macos_darkmode_toggle"}
+    return {
+        "reply": "macOS 다크모드 전환에 실패했습니다. macOS runner 실행 상태를 확인하세요.",
+        "route": "macos_fallback",
+        "action_type": "macos_darkmode_toggle",
+    }
+
+
+def execute_macos_finder(state: AssistantState) -> dict:
+    message, channel = state["message"], state.get("channel", "")
+    session_id, user_id = state.get("session_id", ""), state.get("user_id")
+    parsed = state.get("parsed_params")
+
+    reply = run_macos_automation(message, channel, session_id, user_id, "macos/finder/open", parsed)
+    if reply is not None:
+        return {"reply": reply, "route": "macos", "action_type": "macos_finder_open"}
+    return {
+        "reply": "Finder 폴더 열기에 실패했습니다. macOS runner 실행 상태를 확인하세요.",
+        "route": "macos_fallback",
+        "action_type": "macos_finder_open",
+    }
+
+
+def execute_web_search(state: AssistantState) -> dict:
+    message, channel = state["message"], state.get("channel", "")
+    memory_context = state.get("memory_context")
+
+    from app.search import run_web_search, format_search_results_for_llm
+
+    search_result = run_web_search(message)
+    if search_result.get("error"):
+        reply, route = generate_local_reply(message, channel, memory_context)
+        return {"reply": reply, "route": route, "action_type": None}
+
+    context_text = format_search_results_for_llm(search_result)
+    search_memory = [{"category": "search_context", "content": context_text, "source": "web_search"}]
+    combined_memory = (memory_context or []) + search_memory
+    reply, route = generate_local_reply(
+        f"다음 검색 결과를 바탕으로 사용자 질문에 답변해줘.\n\n{context_text}\n\n사용자 질문: {message}",
+        channel,
+        combined_memory,
+    )
+    return {"reply": reply, "route": "web_search", "action_type": "web_search"}
