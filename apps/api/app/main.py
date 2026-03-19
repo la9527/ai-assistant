@@ -6,6 +6,7 @@ import logging
 import re
 import secrets
 import time
+import uuid
 from urllib.parse import parse_qs
 
 from sqlalchemy import text
@@ -20,6 +21,7 @@ from fastapi import Request
 from fastapi import Response
 from fastapi import Cookie
 from fastapi.responses import HTMLResponse
+from fastapi.responses import StreamingResponse
 
 import httpx
 
@@ -129,7 +131,12 @@ async def api_key_auth_middleware(request: Request, call_next):
     if settings.api_key:
         path = request.url.path
         if not any(path.startswith(prefix) for prefix in _AUTH_EXEMPT_PREFIXES):
+            # X-API-Key 헤더 또는 Authorization: Bearer 토큰 둘 다 허용
             provided = request.headers.get("X-API-Key", "")
+            if not provided:
+                auth_header = request.headers.get("Authorization", "")
+                if auth_header.startswith("Bearer "):
+                    provided = auth_header[7:]
             if not hmac.compare_digest(provided, settings.api_key):
                 return Response(
                     content=json.dumps({"detail": "Invalid or missing API key"}),
@@ -1316,7 +1323,7 @@ if _limiter_available:
     chat = limiter.limit(settings.rate_limit_chat)(chat)
 
 
-def _chat_impl(payload: ChatRequest, db: Session) -> ChatResponse:
+def _chat_impl(payload: ChatRequest, db: Session, *, provider_hint: str | None = None) -> ChatResponse:
     internal_user_id = _resolve_internal_user_id(db, payload.channel, payload.user_id)
     memory_context = _load_user_memory_context(db, internal_user_id)
     approval_command = _match_approval_command(payload.message)
@@ -1361,6 +1368,7 @@ def _chat_impl(payload: ChatRequest, db: Session) -> ChatResponse:
         internal_user_id,
         structured_extraction=structured,
         memory_context=memory_context,
+        provider_hint=provider_hint,
     )
     approval_ticket_id = None
     if result["route"] == "approval_required" and result["action_type"]:
@@ -1394,6 +1402,217 @@ def _chat_impl(payload: ChatRequest, db: Session) -> ChatResponse:
         session_id=session.id,
         approval_ticket_id=approval_ticket_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# OpenAI-compatible API  (/v1/chat/completions, /v1/models)
+# Open WebUI 등 OpenAI 호환 클라이언트에서 직접 연결할 수 있는 프록시 엔드포인트.
+# 일반 채팅은 로컬/외부 LLM으로 포워딩하고, 자동화 의도가 감지되면
+# 기존 파이프라인(LangGraph → n8n → 승인)을 실행한 뒤 결과를 OpenAI 응답
+# 형식으로 wrapping한다.
+# ---------------------------------------------------------------------------
+
+_OPENAI_COMPAT_MODEL = "ai-assistant"
+_OPENAI_COMPAT_MODEL_PREFIX = "ai-assistant:"
+
+_PROVIDER_DISPLAY_NAMES: dict[str, str] = {
+    "openai": "OpenAI",
+    "anthropic": "Claude",
+    "gemini": "Gemini",
+}
+
+
+def _openai_chat_response(
+    reply: str,
+    model: str = _OPENAI_COMPAT_MODEL,
+    finish_reason: str = "stop",
+) -> dict[str, object]:
+    return {
+        "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": reply},
+                "finish_reason": finish_reason,
+            }
+        ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
+def _openai_stream_chunks(
+    reply: str,
+    model: str = _OPENAI_COMPAT_MODEL,
+) -> list[str]:
+    """응답 텍스트를 SSE 청크 목록으로 변환한다."""
+    completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+    created = int(time.time())
+    chunks: list[str] = []
+    # 역할 청크
+    chunks.append(json.dumps({
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}],
+    }, ensure_ascii=False))
+    # 내용 청크 — 문장 단위로 분할
+    sentences = re.split(r"(?<=[.!?。\n])\s*", reply)
+    for sentence in sentences:
+        if not sentence:
+            continue
+        chunks.append(json.dumps({
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{"index": 0, "delta": {"content": sentence}, "finish_reason": None}],
+        }, ensure_ascii=False))
+    # 종료 청크
+    chunks.append(json.dumps({
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+    }, ensure_ascii=False))
+    return chunks
+
+
+@app.get("/v1/models")
+def openai_list_models() -> dict:
+    """OpenAI 호환 모델 목록. Open WebUI 모델 선택 드롭다운에 표시된다."""
+    models = [
+        {
+            "id": _OPENAI_COMPAT_MODEL,
+            "object": "model",
+            "created": 1700000000,
+            "owned_by": "ai-assistant",
+        },
+    ]
+    # 외부 LLM provider별 모델 추가
+    for prov_info in settings.available_external_providers():
+        prov = prov_info["provider"]
+        display = _PROVIDER_DISPLAY_NAMES.get(prov, prov)
+        models.append({
+            "id": f"{_OPENAI_COMPAT_MODEL}:{prov}",
+            "object": "model",
+            "created": 1700000000,
+            "owned_by": f"ai-assistant/{display}",
+        })
+    # 로컬 MLX 모델도 노출하여 직접 대화 가능
+    if settings.local_llm.model:
+        models.append({
+            "id": settings.local_llm.model,
+            "object": "model",
+            "created": 1700000000,
+            "owned_by": "local",
+        })
+    return {"object": "list", "data": models}
+
+
+@app.post("/v1/chat/completions")
+async def openai_chat_completions(request: Request, db: Session = Depends(get_db)):
+    """OpenAI 호환 chat completions 엔드포인트.
+
+    - model=ai-assistant → 기본 provider로 자동화 파이프라인 경유
+    - model=ai-assistant:openai → OpenAI 강제 사용 + 자동화 파이프라인
+    - model=ai-assistant:claude → Claude 강제 사용 + 자동화 파이프라인
+    - model=ai-assistant:gemini → Gemini 강제 사용 + 자동화 파이프라인
+    - model=<로컬 모델명> → 로컬 LLM 직접 포워딩
+    - stream=true 지원
+    """
+    body = await request.json()
+    model = body.get("model", _OPENAI_COMPAT_MODEL)
+    messages = body.get("messages", [])
+    stream = body.get("stream", False)
+
+    # 마지막 user 메시지 추출
+    user_message = ""
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            user_message = msg.get("content", "")
+            break
+
+    if not user_message:
+        return _openai_chat_response("메시지가 비어 있습니다.", model=model)
+
+    # ai-assistant 또는 ai-assistant:<provider> 패턴 매칭
+    provider_hint: str | None = None
+    is_assistant_model = False
+    if model == _OPENAI_COMPAT_MODEL:
+        is_assistant_model = True
+    elif model.startswith(_OPENAI_COMPAT_MODEL_PREFIX):
+        is_assistant_model = True
+        provider_hint = model[len(_OPENAI_COMPAT_MODEL_PREFIX):]
+        # claude → anthropic 정규화
+        provider_hint = {"claude": "anthropic"}.get(provider_hint.lower(), provider_hint.lower())
+
+    if not is_assistant_model:
+        return _forward_to_local_llm(body, stream)
+
+    # 자동화 파이프라인 실행
+    reply = _openai_compat_process(user_message, db, provider_hint=provider_hint)
+
+    if stream:
+        chunks = _openai_stream_chunks(reply, model=model)
+
+        async def generate():
+            for chunk in chunks:
+                yield f"data: {chunk}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(generate(), media_type="text/event-stream")
+
+    return _openai_chat_response(reply, model=model)
+
+
+def _openai_compat_process(user_message: str, db: Session, *, provider_hint: str | None = None) -> str:
+    """OpenAI 호환 요청을 기존 _chat_impl 파이프라인으로 처리한다."""
+    payload = ChatRequest(message=user_message, channel="webui")
+    result = _chat_impl(payload, db, provider_hint=provider_hint)
+    return result.reply
+
+
+def _forward_to_local_llm(body: dict, stream: bool) -> Response | StreamingResponse:
+    """로컬 LLM으로 OpenAI 요청을 그대로 프록시한다."""
+    endpoint = f"{settings.local_llm.base_url.rstrip('/')}/chat/completions"
+    try:
+        if stream:
+            # 스트리밍 프록시 — httpx sync stream을 async generator로 변환
+            client = httpx.Client(timeout=settings.local_llm.timeout_seconds)
+            upstream = client.send(
+                client.build_request("POST", endpoint, json=body),
+                stream=True,
+            )
+            upstream.raise_for_status()
+
+            async def proxy_stream():
+                try:
+                    for line in upstream.iter_lines():
+                        yield f"{line}\n"
+                finally:
+                    upstream.close()
+                    client.close()
+
+            return StreamingResponse(proxy_stream(), media_type="text/event-stream")
+        else:
+            with httpx.Client(timeout=settings.local_llm.timeout_seconds) as client:
+                resp = client.post(endpoint, json=body)
+                resp.raise_for_status()
+            return Response(content=resp.content, media_type="application/json")
+    except Exception as exc:
+        logger.warning("Local LLM proxy failed: %s", exc)
+        model = body.get("model", settings.local_llm.model)
+        return Response(
+            content=json.dumps(_openai_chat_response(
+                f"로컬 LLM 연결 실패: {exc}", model=model,
+            )),
+            media_type="application/json",
+        )
 
 
 @app.post("/api/browser/read", response_model=BrowserReadResponse)

@@ -19,6 +19,7 @@ class AssistantState(TypedDict, total=False):
     intent_override: str | None
     memory_context: list[dict[str, str]] | None
     structured_extraction: StructuredExtraction | None  # 사전 구축된 extraction (참조 컨텍스트 적용 완료)
+    provider_hint: str | None  # 외부 LLM provider 지정 (openai, anthropic, gemini)
 
     # --- 중간 산출물 ---
     extraction: StructuredExtraction | None

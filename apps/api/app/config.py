@@ -20,6 +20,14 @@ class LocalLLMSettings(BaseModel):
 
 
 class ExternalLLMSettings(BaseModel):
+    """외부 LLM 설정.
+
+    provider 별 기본값:
+      - openai : base_url=https://api.openai.com/v1, model=gpt-4o-mini
+      - anthropic: base_url=https://api.anthropic.com, model=claude-sonnet-4-20250514
+      - gemini  : base_url=https://generativelanguage.googleapis.com, model=gemini-2.5-flash
+    """
+
     enabled: bool = Field(default=False)
     provider: str = Field(default="openai")
     base_url: str = Field(default="https://api.openai.com/v1")
@@ -27,6 +35,8 @@ class ExternalLLMSettings(BaseModel):
     model: str = Field(default="gpt-4o-mini")
     timeout_seconds: float = Field(default=60.0)
     fallback_only: bool = Field(default=True)
+    structured_extraction_enabled: bool = Field(default=False)
+    structured_extraction_model: str = Field(default="")
 
 
 class Settings(BaseSettings):
@@ -93,6 +103,22 @@ class Settings(BaseSettings):
     external_llm_model: str = Field(default="gpt-4o-mini", alias="EXTERNAL_LLM_MODEL")
     external_llm_timeout_seconds: float = Field(default=60.0, alias="EXTERNAL_LLM_TIMEOUT_SECONDS")
     external_llm_fallback_only: bool = Field(default=True, alias="EXTERNAL_LLM_FALLBACK_ONLY")
+    external_llm_structured_extraction_enabled: bool = Field(
+        default=False, alias="EXTERNAL_LLM_STRUCTURED_EXTRACTION_ENABLED"
+    )
+    external_llm_structured_extraction_model: str = Field(
+        default="", alias="EXTERNAL_LLM_STRUCTURED_EXTRACTION_MODEL"
+    )
+    # provider별 개별 API 키/모델 설정
+    openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+    openai_model: str = Field(default="gpt-4o-mini", alias="OPENAI_MODEL")
+    openai_base_url: str = Field(default="https://api.openai.com/v1", alias="OPENAI_BASE_URL")
+    anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
+    anthropic_model: str = Field(default="claude-sonnet-4-20250514", alias="ANTHROPIC_MODEL")
+    anthropic_base_url: str = Field(default="https://api.anthropic.com", alias="ANTHROPIC_BASE_URL")
+    gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
+    gemini_model: str = Field(default="gemini-2.5-flash", alias="GEMINI_MODEL")
+    gemini_base_url: str = Field(default="https://generativelanguage.googleapis.com", alias="GEMINI_BASE_URL")
     web_search_enabled: bool = Field(default=False, alias="WEB_SEARCH_ENABLED")
     web_search_provider: str = Field(default="tavily", alias="WEB_SEARCH_PROVIDER")
     tavily_api_key: str = Field(default="", alias="TAVILY_API_KEY")
@@ -132,7 +158,75 @@ class Settings(BaseSettings):
             model=self.external_llm_model,
             timeout_seconds=self.external_llm_timeout_seconds,
             fallback_only=self.external_llm_fallback_only,
+            structured_extraction_enabled=self.external_llm_structured_extraction_enabled,
+            structured_extraction_model=(
+                self.external_llm_structured_extraction_model or self.external_llm_model
+            ),
         )
+
+    # ----- provider별 개별 ExternalLLMSettings 구성 -----
+
+    _PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
+        "openai": {"base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
+        "anthropic": {"base_url": "https://api.anthropic.com", "model": "claude-sonnet-4-20250514"},
+        "gemini": {"base_url": "https://generativelanguage.googleapis.com", "model": "gemini-2.5-flash"},
+    }
+
+    def resolve_external_llm(self, provider: str | None = None) -> ExternalLLMSettings:
+        """지정된 provider의 ExternalLLMSettings를 구성한다.
+
+        provider가 None이면 기본 external_llm 속성을 반환한다.
+        개별 provider 키가 설정되어 있으면 해당 키를 사용하고,
+        없으면 기본 EXTERNAL_LLM_* 설정을 fallback으로 사용한다.
+        """
+        if provider is None:
+            return self.external_llm
+        prov = provider.lower()
+        key_map = {
+            "openai": (self.openai_api_key, self.openai_model, self.openai_base_url),
+            "anthropic": (self.anthropic_api_key, self.anthropic_model, self.anthropic_base_url),
+            "gemini": (self.gemini_api_key, self.gemini_model, self.gemini_base_url),
+        }
+        if prov not in key_map:
+            return self.external_llm
+        api_key, model, base_url = key_map[prov]
+        # 개별 키가 없으면 기본 외부 LLM 설정 fallback
+        if not api_key:
+            api_key = self.external_llm_api_key
+            model = model or self.external_llm_model
+            base_url = base_url or self.external_llm_base_url
+        return ExternalLLMSettings(
+            enabled=bool(api_key),
+            provider=prov,
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            timeout_seconds=self.external_llm_timeout_seconds,
+            fallback_only=False,
+            structured_extraction_enabled=self.external_llm_structured_extraction_enabled,
+            structured_extraction_model=(
+                self.external_llm_structured_extraction_model or model
+            ),
+        )
+
+    def available_external_providers(self) -> list[dict[str, str]]:
+        """API 키가 설정된 외부 LLM provider 목록을 반환한다."""
+        providers: list[dict[str, str]] = []
+        key_map = {
+            "openai": (self.openai_api_key, self.openai_model),
+            "anthropic": (self.anthropic_api_key, self.anthropic_model),
+            "gemini": (self.gemini_api_key, self.gemini_model),
+        }
+        for prov, (api_key, model) in key_map.items():
+            # 개별 키가 있거나, 기본 외부 LLM이 해당 provider이면 활성
+            effective_key = api_key or (
+                self.external_llm_api_key
+                if self.external_llm_provider.lower() == prov and self.external_llm_enabled
+                else ""
+            )
+            if effective_key:
+                providers.append({"provider": prov, "model": model})
+        return providers
 
     @property
     def slack_auto_response_channels(self) -> set[str]:

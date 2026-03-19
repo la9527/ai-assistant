@@ -231,6 +231,7 @@ def run_workflow(
     approval_granted: bool = False,
     memory_context: list[dict[str, str]] | None = None,
     structured_extraction: "StructuredExtraction | None" = None,
+    provider_hint: str | None = None,
 ) -> dict[str, str | None]:
     """process_message 대체 진입점 — LangGraph 워크플로를 실행한다."""
     from app.schemas import StructuredExtraction as _SE  # noqa: F811
@@ -244,6 +245,7 @@ def run_workflow(
         "intent_override": intent_override,
         "memory_context": memory_context,
         "structured_extraction": structured_extraction,
+        "provider_hint": provider_hint,
     }
     result = workflow.invoke(initial_state)
     return {
