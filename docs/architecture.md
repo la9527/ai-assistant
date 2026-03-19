@@ -122,7 +122,7 @@ flowchart TB
 
 ### 6. 하드코딩보다 스킬 중심 확장
 
-반복 가능한 업무 능력은 개별 기능으로 고정 구현하기보다 스킬 단위로 등록 가능한 구조를 우선한다.
+반복 가능한 업무 능력은 개별 기능으로 고정 구현하기보다 스킬 단위로 등록 가능한 구조를 우선한다. 외부 도구 서버는 MCP(Model Context Protocol) 표준 인터페이스로 연결해 내부 스킬과 같은 방식으로 호출한다.
 
 ### 7. 브라우저와 로컬 실행을 1급 도구로 취급
 
@@ -171,6 +171,11 @@ flowchart TB
 - `GET /api/sessions/{session_id}/messages`
 - `GET /api/sessions/{session_id}/state`
 - `GET /api/tasks/{task_id}`
+- `POST /api/tasks/async` — Redis 큐로 비동기 작업 발행
+- `GET /api/tasks/async/{task_id}` — 비동기 작업 결과 조회
+- `POST /api/browser/read` — 웹 페이지 본문 읽기 프록시
+- `POST /api/browser/screenshot` — 웹 페이지 스크린샷 프록시
+- `POST /api/browser/search` — 브라우저 기반 Google 검색 프록시
 - `GET /api/health`
 
 현재 FastAPI의 Slack 경로는 아래 범위를 포함한다.
@@ -216,6 +221,8 @@ LangGraph에 적합한 영역:
 - 브라우저 및 시스템 도구 호출 전 정책 판정
 - extraction JSON 검증 실패 시 clarification 분기
 - history와 last_candidates를 활용한 참조 해석
+- 스킬 레지스트리 기반 의도 분류와 도구 선택
+- MCP 도구 서버 호출을 내부 스킬과 동일한 실행 노드에서 처리
 
 LangGraph에 과도한 영역:
 
@@ -413,6 +420,7 @@ LangGraph에 과도한 영역:
 - 자주 쓰는 업무 능력을 재사용 가능한 단위로 제공
 - 사용자 또는 워크스페이스별 기능 확장
 - 프롬프트, 입력 스키마, 정책, 실행기 연결
+- 외부 도구 서버(MCP)를 표준 인터페이스로 연결
 
 예시 스킬:
 
@@ -425,7 +433,11 @@ LangGraph에 과도한 영역:
 
 권장 구조:
 
-- 스킬 메타데이터
+- 스킬 메타데이터(SkillDescriptor): 스킬 ID, 도메인, 액션, 트리거 키워드, 입력 스키마, 실행기 유형, 승인 필요 여부
+- 스킬 실행기 유형: n8n, macos, browser, mcp, local_function, api
+- MCP 도구도 동일한 SkillDescriptor로 등록해 내부 스킬과 같은 인터페이스로 호출
+
+상세 설계와 구현 로드맵은 [docs/plugin-and-skill-architecture.md](plugin-and-skill-architecture.md)에 정리한다.
 
 ## 카카오 중심 요청 흐름
 
@@ -473,9 +485,9 @@ Kakao Channel/OpenBuilder
 
 - 캐시
 - 세션 상태
-- 작업 큐
+- 작업 큐 (`assistant:tasks` LIST + `assistant:results:*` 키)
 - LangGraph 체크포인트 보조 저장
-- rate limiting
+- rate limiting (slowapi 연동)
 
 ## 요청 흐름
 
@@ -559,6 +571,28 @@ User requests long-running job
 -> user notified in original or preferred channel
 ```
 
+### 비동기 Worker 큐 흐름
+
+```text
+Client sends POST /api/tasks/async { type, payload }
+-> API publishes task to Redis LIST (assistant:tasks)
+-> Worker BRPOP consumes task
+-> Worker dispatches by type (chat, web_search, callback)
+-> Result stored at assistant:results:{task_id} (TTL 600s)
+-> Client polls GET /api/tasks/async/{task_id} for result
+```
+
+### 웹 검색 흐름
+
+```text
+User asks question requiring current information
+-> Intent classified as web_search
+-> Tavily API search (or browser-based Google search fallback)
+-> Search results formatted as text context
+-> LLM generates summary using search results
+-> Final answer returned to user
+```
+
 ### 브라우저 자동화 흐름
 
 ```text
@@ -569,6 +603,41 @@ User requests website-based action
 -> Playwright session starts
 -> result snapshot and summary stored
 -> final answer returned with evidence
+```
+
+### MCP 도구 실행 흐름
+
+```text
+MCP 서버가 MCP_SERVERS 설정에 정의됨
+-> API 시작 시 MCPManager가 각 서버에 연결
+-> list_tools()로 도구 목록을 발견
+-> 발견된 도구를 SkillDescriptor로 변환하여 스킬 레지스트리에 등록
+-> 사용자 메시지가 MCP 스킬에 매칭되면 intent=mcp_* 로 분류
+-> LangGraph execute_mcp_tool 노드에서 call_tool() 호출
+-> 결과를 텍스트로 변환하여 응답
+```
+
+설정 형식 (환경변수 MCP_SERVERS):
+```json
+[
+  {"name": "macos", "transport": "stdio", "command": "python", "args": ["apps/macos-mcp-server/server.py"], "domain": "macos"},
+  {"name": "filesystem", "transport": "sse", "url": "http://localhost:3001/sse"}
+]
+```
+
+### 참조형 요청 · 후보 선택 흐름
+
+```text
+1. 사용자: "오늘 일정 보여줘"
+   -> calendar_summary 실행 → 번호 매겨진 일정 목록 응답
+   -> extract_candidates_from_reply()가 후보 목록 추출
+   -> session_state.last_candidates에 저장
+
+2. 사용자: "두 번째 삭제해줘"
+   -> parse_ordinal_index()가 인덱스 1을 파싱
+   -> last_candidates[1]의 라벨을 추출
+   -> apply_reference_context()가 calendar payload에 주입
+   -> calendar_delete 의도로 승인 흐름 진행
 ```
 
 ## 확장 후 가능한 기능

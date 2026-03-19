@@ -38,67 +38,87 @@
 - 메시징: Slack Events API, Kakao 채널 webhook/OpenBuilder
 - 데이터: PostgreSQL, Redis
 - 로컬 자동화: AppleScript, Playwright, Open Interpreter
+- 웹 검색: Tavily API (선택적 브라우저 기반 Google 검색 fallback)
+- 비동기 작업 큐: Redis LIST 기반 Worker
+- API 보안: API Key 인증 + slowapi Rate Limiting
 
 ## 단계별 구현 계획
 
-### 0단계
+### 0단계 ✅
 
 기본 운영 기반을 먼저 준비한다.
 
-- Reverse proxy
-- HTTPS
-- Redis
-- PostgreSQL
-- 환경변수 및 시크릿 관리
-- 백업 및 복구 기준 수립
-- 장애 감지와 재기동 절차 정의
+- [x] Reverse proxy
+- [x] HTTPS
+- [x] Redis
+- [x] PostgreSQL
+- [x] 환경변수 및 시크릿 관리
+- [ ] 백업 및 복구 기준 수립
+- [ ] 장애 감지와 재기동 절차 정의
 
-### 1단계
+### 1단계 ✅
 
 로컬 추론 환경을 안정화한다.
 
-- Ollama 또는 LM Studio 설치
-- Open WebUI 및 코어 API 연결
-- 로컬 모델 1~2개 선정 및 검증
-- 런타임별 성능 비교와 운영 기준 수립
-- 응답 속도, 메모리 사용량, 품질 기준 수립
+- [x] Ollama 또는 LM Studio 설치
+- [x] Open WebUI 및 코어 API 연결
+- [x] 로컬 모델 1~2개 선정 및 검증
+- [x] 런타임별 성능 비교와 운영 기준 수립
+- [x] 응답 속도, 메모리 사용량, 품질 기준 수립
 
-### 2단계
+### 2단계 🔧 진행 중
 
 공통 백엔드와 최소 에이전트 라우팅을 만든다.
 
-- FastAPI 기반 공통 API
-- LangGraph 최소 라우터
-- Slack Events API 연동
+- [x] FastAPI 기반 공통 API
+- [x] LangGraph 최소 라우터
+- [x] Slack Events API 연동 (코드 완성, 실 워크스페이스 미연동)
 
-### 3단계
+### 3단계 🔧 진행 중
 
 외부 서비스 자동화를 추가한다.
 
-- n8n 연결
-- Gmail
-- Google Calendar
-- Notion
-- 장기 실행 작업과 스케줄 작업 분리
+- [x] n8n 연결
+- [x] Gmail
+- [x] Google Calendar
+- [ ] Notion
+- [ ] 장기 실행 작업과 스케줄 작업 분리
 
-### 4단계
+### 4단계 🔧 진행 중
 
 Kakao 채널을 추가한다.
 
-- Kakao 공식 채널 webhook 또는 OpenBuilder 연동
-- 채널별 메시지 포맷 표준화
-- 공개 HTTPS 엔드포인트 검증
-- FastAPI를 카카오 이벤트 수신 게이트웨이로 사용
-- n8n은 카카오 응답 이후 실행되는 자동화 계층으로만 사용
+- [x] Kakao 공식 채널 webhook 또는 OpenBuilder 연동
+- [x] 채널별 메시지 포맷 표준화
+- [x] 공개 HTTPS 엔드포인트 검증
+- [x] FastAPI를 카카오 이벤트 수신 게이트웨이로 사용
+- [x] n8n은 카카오 응답 이후 실행되는 자동화 계층으로만 사용
+- [ ] 운영 채널 callbackUrl 누락 이슈 해결 (보류)
 
-### 5단계
+### 5단계 🔧 진행 중
 
 맥 자동화를 추가한다.
 
-- AppleScript 기반 네이티브 작업
-- Playwright 기반 브라우저 자동화
-- Open Interpreter 기반 고급 실험 기능
-- 승인 흐름 및 감사 로그 추가
+- [x] AppleScript 기반 네이티브 작업 (Notes 생성)
+- [x] Playwright 기반 브라우저 자동화 (read-only)
+- [x] AppleScript 추가 앱 확장 (Finder, Reminders, System Events 볼륨/다크모드)
+- [x] 브라우저 러너 확장 (screenshot, Google 검색)
+- [ ] Playwright 쓰기/인터랙션 확장
+- [ ] Open Interpreter 기반 고급 실험 기능
+- [x] 승인 흐름 및 감사 로그 추가
+
+### 6단계 🔧 진행 중
+
+플러그인 및 스킬 확장 구조를 도입한다.
+
+- [x] automation.py를 스킬 레지스트리와 도메인별 모듈로 분리
+- [x] SkillDescriptor 기반 의도 분류와 도구 선택 표준화
+- [x] 웹 검색 통합 (Tavily API + LLM 요약)
+- [x] Worker 비동기 큐 (Redis LIST 기반 LPUSH/BRPOP)
+- [x] API Key 인증 미들웨어 + slowapi Rate Limiting
+- [ ] MCP(Model Context Protocol) 클라이언트로 외부 도구 서버 연결
+- [ ] macOS 자동화를 MCP 서버로 격리해 독립 배포 가능한 구조로 전환
+- [ ] 설정 파일 기반으로 새 도구 추가 가능한 플러그인 아키텍처 확보
 
 ## 권장 저장소 구조 방향
 
@@ -129,6 +149,7 @@ Kakao 채널을 추가한다.
 ## 핵심 설계 문서
 
 - [docs/architecture.md](docs/architecture.md)
+- [docs/plugin-and-skill-architecture.md](docs/plugin-and-skill-architecture.md)
 - [docs/kakao-integration.md](docs/kakao-integration.md)
 - [docs/remote-access.md](docs/remote-access.md)
 - [docs/google-calendar-integration.md](docs/google-calendar-integration.md)
@@ -185,13 +206,14 @@ Kakao 채널을 추가한다.
 
 ## 현재 남은 우선순위
 
-1. Slack 실제 워크스페이스 연동과 토큰 기반 이벤트 검증
-2. Kakao 운영 채널의 callbackUrl 누락 여부와 OpenBuilder 블록 설정 차이를 다시 점검
-3. Playwright 기반 브라우저 자동화 read-only 경로를 실사용 기준으로 다듬고 승인 필요 시나리오로 확장
-4. AppleScript 기반 macOS 자동화 승인 시나리오를 실사용 기준으로 다듬고 추가 앱으로 확장
-5. LangGraph 상태 라우팅과 승인 후 재개 구조 고도화
-6. 장기 메모리 계층과 후보 선택형 후속 참조 해석 추가
-7. 백업, 복구, 재기동 절차의 실제 검증과 문서화
+- [ ] 1. Slack 실제 워크스페이스 연동과 토큰 기반 이벤트 검증
+- [ ] 2. Kakao 운영 채널의 callbackUrl 누락 여부와 OpenBuilder 블록 설정 차이를 다시 점검
+- [ ] 3. Playwright 기반 브라우저 자동화 read-only 경로를 실사용 기준으로 다듬고 승인 필요 시나리오로 확장
+- [x] 4. AppleScript 기반 macOS 자동화 승인 시나리오를 실사용 기준으로 다듬고 추가 앱으로 확장 (Reminders, Volume, Dark Mode, Finder)
+- [ ] 5. LangGraph 상태 라우팅과 승인 후 재개 구조 고도화
+- [ ] 6. 장기 메모리 계층과 후보 선택형 후속 참조 해석 추가
+- [ ] 7. 플러그인 및 스킬 확장 아키텍처 도입 — automation.py를 스킬 레지스트리와 도메인별 모듈로 분리하고, MCP 도구 서버 연결 기반을 준비 ([docs/plugin-and-skill-architecture.md](docs/plugin-and-skill-architecture.md))
+- [ ] 8. 백업, 복구, 재기동 절차의 실제 검증과 문서화
 
 브라우저 자동화는 선택 프로필 서비스 `browser-runner`를 통해 분리한다. 현재는 `POST /assistant/api/browser/read`로 대상 URL의 제목, 설명, 주요 heading, 본문 일부를 read-only 방식으로 추출할 수 있다.
 

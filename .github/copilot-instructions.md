@@ -25,6 +25,8 @@
 - FastAPI 경로, Docker Compose 설정, 문서는 함께 갱신한다.
 - 카카오 응답은 일반 답변은 `simpleText`, 자동화 응답은 `basicCard` 또는 `quickReplies` 중심으로 유지한다.
 - 일정, 메일, 노션 계열 요청은 n8n 경로를 우선 시도하고 실패 시 로컬 LLM fallback을 유지한다.
+- 새 자동화 기능을 추가할 때는 `app/skills/` 아래에 도메인별 모듈로 분리하는 방향을 우선한다.
+- 외부 도구 연결은 MCP 서버 설정을 우선 검토하고, 직접 구현은 MCP 인터페이스로 감쌀 수 없을 때만 허용한다.
 
 ## 구현 시 주의사항
 
@@ -55,6 +57,7 @@
 - `README.md`
 - `docs/architecture.md`
 - `docs/implementation-plan.md`
+- `docs/plugin-and-skill-architecture.md`
 - `infra/docker/docker-compose.yml`
 - `infra/caddy/Caddyfile`
 

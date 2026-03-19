@@ -4,34 +4,34 @@
 
 현재 문서 설계를 실제 실행 가능한 최소 형태로 전환하고, 이후 기능을 순차적으로 붙일 수 있는 기반을 만든다.
 
-## 1단계: 로컬 런타임 준비
+## 1단계: 로컬 런타임 준비 ✅
 
-- `uv` 설치 및 Python 실행 환경 표준화
-- `Ollama` 설치 및 상시 실행 방식 검증
-- 필요 시 `LM Studio`는 사용자가 직접 설치 후 OpenAI 호환 API 포트 확인
-- 로컬 모델 1개 다운로드 및 응답 확인
+- [x] `uv` 설치 및 Python 실행 환경 표준화
+- [x] `Ollama` 설치 및 상시 실행 방식 검증
+- [x] 필요 시 `LM Studio`는 사용자가 직접 설치 후 OpenAI 호환 API 포트 확인
+- [x] 로컬 모델 1개 다운로드 및 응답 확인
 
-## 2단계: 기본 애플리케이션 골격
+## 2단계: 기본 애플리케이션 골격 ✅
 
-- `apps/api` FastAPI 서비스 추가
-- `apps/workers` 작업 실행 프로세스 추가
-- 공통 환경변수 파일 초안 추가
-- 헬스체크와 최소 API 엔드포인트 구현
+- [x] `apps/api` FastAPI 서비스 추가
+- [x] `apps/workers` 작업 실행 프로세스 추가
+- [x] 공통 환경변수 파일 초안 추가
+- [x] 헬스체크와 최소 API 엔드포인트 구현
 
-## 3단계: Docker 운영 골격
+## 3단계: Docker 운영 골격 ✅
 
-- `infra/docker/docker-compose.yml` 추가
-- `infra/caddy/Caddyfile` 추가
-- `PostgreSQL`, `Redis`, `n8n`, `Open WebUI`, `api`, `worker` 서비스 정의
-- 호스트의 `Ollama` 또는 `LM Studio` 연결 경로 정의
+- [x] `infra/docker/docker-compose.yml` 추가
+- [x] `infra/caddy/Caddyfile` 추가
+- [x] `PostgreSQL`, `Redis`, `n8n`, `Open WebUI`, `api`, `worker` 서비스 정의
+- [x] 호스트의 `Ollama` 또는 `LM Studio` 연결 경로 정의
 
-## 4단계: 최소 기능 MVP
+## 4단계: 최소 기능 MVP ✅
 
-- `POST /api/health`
-- `POST /api/chat`
-- `POST /api/slack/events`
-- PostgreSQL 기반 세션, 승인 티켓, 작업 상태 저장 구조
-- 로컬 LLM 라우팅용 설정 계층
+- [x] `POST /api/health`
+- [x] `POST /api/chat`
+- [x] `POST /api/slack/events`
+- [x] PostgreSQL 기반 세션, 승인 티켓, 작업 상태 저장 구조
+- [x] 로컬 LLM 라우팅용 설정 계층
 
 ## 현재 진행 상태
 
@@ -77,51 +77,56 @@
 - Kakao callback URL은 top-level과 `userRequest.callbackUrl` 양쪽 모두 지원하도록 보강했다.
  Kakao 동기 webhook 승인 follow-up 경로에서 발생하던 500 오류는 승인 명령 사용자 메시지 기록 시 structured payload를 필수로 요구하던 부분을 수정해 해결했다.
 - 다만 실제 Kakao 운영 채널 로그에서는 `callbackUrl` 없이 들어오는 호출과 `1002` 오류가 남아 있어, 외부 채널 우선순위는 Slack 쪽으로 다시 이동했다.
+- 웹 검색 통합: Tavily API 클라이언트(`app/search.py`), 검색 스킬 등록, `automation.py` 의도 분류와 라우팅, LangGraph `execute_web_search` 노드를 추가했다.
+- 브라우저 러너 확장: `POST /browse/screenshot` (full-page PNG base64), `POST /browse/search` (Google 검색 결과) 엔드포인트를 추가하고 API에 프록시 경로를 연결했다.
+- Worker 비동기 큐: `worker/main.py`를 Redis BRPOP 소비자로 재구현하고, API에 `POST /api/tasks/async` 발행과 `GET /api/tasks/async/{task_id}` 결과 조회 엔드포인트를 추가했다. 실제 Redis 큐 → Worker 처리 → 결과 저장 end-to-end 검증 완료.
+- API 보안: `API_KEY` 환경변수가 설정되면 `X-API-Key` 헤더 기반 인증 미들웨어가 활성화된다. `/api/health`, `/api/kakao/*`, `/api/slack/*` 등은 인증 면제. `slowapi` 기반 rate limiting은 `/api/chat`에 분당 30회 기본값으로 적용된다.
 
 ## 현재 기준 남은 우선순위
 
-1. `docs/implementation-plan.md`, `README.md`, `docs/architecture.md` 기준의 문서 상태를 계속 동기화한다.
-2. 공통 extraction schema를 기준으로 calendar, mail, note 요청을 순차적으로 LLM JSON extraction 기반으로 전환한다.
-3. session history와 state 저장 구조를 활용해 참조형 요청, 후보 선택형 삭제, 승인 후 재개 흐름을 보강한다.
-4. Slack 앱 설정에 `/assistant/api/slack/events`, `/assistant/api/slack/interactions` 를 반영하고 실제 워크스페이스에서 검증한다.
-5. Slack 공개 채널, DM, 승인 버튼 흐름을 순서대로 실측하고 로그 기준 운영 점검 절차를 확정한다.
-6. Kakao 운영 채널의 callbackUrl 누락 원인과 OpenBuilder 블록 설정 차이를 재검토한다.
-7. Playwright 기반 브라우저 자동화 read-only 시나리오를 검증하고, 이후 승인 필요 시나리오로 확장할 정책과 결과 저장 형식을 정한다.
-8. AppleScript 기반 macOS 자동화는 Notes 외 추가 앱 시나리오와 권한/장애 복구 기준까지 확장한다.
-9. FastAPI 중심 라우팅에서 LangGraph 기반 상태 라우팅과 승인 후 재개 구조로 점진 전환한다.
-10. 채널 간 사용자 매핑은 `user_identities` 기준으로 연결하고, 장기 메모리는 `user_memories` 기준으로 저장·관리한다. 관리자 경로는 `ADMIN_USERNAME`, `ADMIN_PASSWORD` 기반 로그인과 자동 발급 세션 cookie 기준으로 보호하고, 자동 메모리 적재는 명시적 선호/프로필 문장만 보수적으로 반영한다.
-
-운영자가 실제로 identity link, memory 관리, 관리자 토큰 설정을 수행할 때는 [docs/user-identity-memory-guide.md](docs/user-identity-memory-guide.md)를 기준 문서로 사용한다.
-11. 백업, 복구, 재기동 순서, 헬스체크, 로그 확인 절차를 운영 문서와 실제 검증 결과로 정리한다.
+- [ ] 1. `docs/implementation-plan.md`, `README.md`, `docs/architecture.md` 기준의 문서 상태를 계속 동기화한다.
+- [x] 2. 공통 extraction schema를 기준으로 calendar, mail, note 요청을 순차적으로 LLM JSON extraction 기반으로 전환한다.
+- [x] 3. session history와 state 저장 구조를 활용해 참조형 요청, 후보 선택형 삭제, 승인 후 재개 흐름을 보강한다. 순서 참조("두 번째", "1번") 파싱, 응답 후보 추출, 세션 상태 기반 후보 선택 적용, 도메인 계승 로직 구현 완료.
+- [ ] 4. Slack 앱 설정에 `/assistant/api/slack/events`, `/assistant/api/slack/interactions` 를 반영하고 실제 워크스페이스에서 검증한다.
+- [ ] 5. Slack 공개 채널, DM, 승인 버튼 흐름을 순서대로 실측하고 로그 기준 운영 점검 절차를 확정한다.
+- [ ] 6. Kakao 운영 채널의 callbackUrl 누락 원인과 OpenBuilder 블록 설정 차이를 재검토한다.
+- [ ] 7. Playwright 기반 브라우저 자동화 read-only 시나리오를 검증하고, 이후 승인 필요 시나리오로 확장할 정책과 결과 저장 형식을 정한다.
+- [x] 8. AppleScript 기반 macOS 자동화는 Notes 외 Reminders, System Events(볼륨/다크모드), Finder로 확장 완료.
+- [x] 9. FastAPI 중심 라우팅에서 LangGraph 기반 상태 라우팅과 승인 후 재개 구조로 점진 전환한다.
+- [x] 10. 채널 간 사용자 매핑은 `user_identities` 기준으로 연결하고, 장기 메모리는 `user_memories` 기준으로 저장·관리한다. 관리자 경로는 `ADMIN_USERNAME`, `ADMIN_PASSWORD` 기반 로그인과 자동 발급 세션 cookie 기준으로 보호하고, 자동 메모리 적재는 명시적 선호/프로필 문장만 보수적으로 반영한다.
+- [x] 11. 플러그인 및 스킬 확장 아키텍처를 기반으로 `automation.py`를 스킬 레지스트리와 도메인별 모듈로 분리한다. 상세 설계는 [docs/plugin-and-skill-architecture.md](plugin-and-skill-architecture.md)를 참조한다.
+- [x] 12. 웹 검색 통합: Tavily API 기반 검색 + LLM 요약 파이프라인, 스킬 레지스트리 등록, LangGraph 노드 추가 완료.
+- [x] 13. 브라우저 러너 확장: screenshot, Google 검색 엔드포인트 추가, API 프록시 및 브라우저 도메인 스킬 등록 완료.
+- [x] 14. Worker 비동기 큐: Redis LIST 기반 LPUSH/BRPOP 작업 큐, API에서 `POST /api/tasks/async` 발행 및 `GET /api/tasks/async/{task_id}` 결과 조회, Worker 측 chat/web_search/callback 핸들러 구현 완료.
+- [x] 15. API 인증 및 Rate Limiting: API_KEY 환경변수 기반 `X-API-Key` 헤더 미들웨어, slowapi 기반 `/api/chat` 분당 30회 제한, `/api/health`·`/api/kakao/*`·`/api/slack/*` 인증 면제 경로 설정 완료.
+- [x] 16. MCP(Model Context Protocol) 클라이언트를 도입해 외부 도구 서버를 설정 파일(MCP_SERVERS 환경변수) 기반으로 연결한다. MCPManager, MCPConnection, 스킬 레지스트리 자동 등록, LangGraph execute_mcp_tool 노드 구현 완료.
+- [x] 17. macOS 자동화를 MCP 서버로 격리해 Worker/API와 독립 배포 가능한 구조로 전환한다. apps/macos-mcp-server/ 에 stdio 모드 MCP 서버로 분리 완료.
+- [ ] 14. 백업, 복구, 재기동 순서, 헬스체크, 로그 확인 절차를 운영 문서와 실제 검증 결과로 정리한다.
 
 ## 구조화 추출 전환 계획
 
-1. 공통 envelope 정의
+- [x] 1. 공통 envelope 정의
+  - [x] `domain`, `action`, `intent`, `confidence`, `needs_clarification`, `approval_required`, `missing_fields` 를 고정 필드로 둔다.
+  - [x] calendar, mail, note payload는 envelope 하위 schema로 분리한다.
 
-- `domain`, `action`, `intent`, `confidence`, `needs_clarification`, `approval_required`, `missing_fields` 를 고정 필드로 둔다.
-- calendar, mail, note payload는 envelope 하위 schema로 분리한다.
+- [x] 2. session history와 state 저장
+  - [x] 사용자 원문, assistant 응답, route, extraction 결과, 승인 메타데이터를 history에 저장한다.
+  - [x] 마지막 intent, 최근 extraction, pending action, pending ticket, candidate 목록은 state에 저장한다.
 
-2. session history와 state 저장
+- [x] 3. rule-based baseline 유지
+  - [x] 현재 parser는 즉시 제거하지 않고 baseline extraction 생산용으로 유지한다.
+  - [x] LLM extraction이 실패하거나 schema 검증을 통과하지 못하면 baseline 또는 clarification으로 내려간다.
 
-- 사용자 원문, assistant 응답, route, extraction 결과, 승인 메타데이터를 history에 저장한다.
-- 마지막 intent, 최근 extraction, pending action, pending ticket, candidate 목록은 state에 저장한다.
-
-3. rule-based baseline 유지
-
-- 현재 parser는 즉시 제거하지 않고 baseline extraction 생산용으로 유지한다.
-- LLM extraction이 실패하거나 schema 검증을 통과하지 못하면 baseline 또는 clarification으로 내려간다.
-
-4. 도메인별 전환 순서
-
-- 1차: `calendar_delete`, `gmail_reply`, `gmail_thread_reply`
-- 2차: `calendar_create`, `calendar_update`, `gmail_draft`, `gmail_send`
-- 3차: summary/list 계열 조회와 후보 선택형 후속 대화
+- [x] 4. 도메인별 전환 순서
+  - [x] 1차: `calendar_delete`, `gmail_reply`, `gmail_thread_reply`
+  - [x] 2차: `calendar_create`, `calendar_update`, `gmail_draft`, `gmail_send`
+  - [x] 3차: summary/list 계열 조회에 시간 범위 파싱(오늘/이번 주/내일 등) 추가, Gmail 검색 조건 자동 생성, 실행 노드에서 n8n으로 필터 전달 구현 완료
 
 ## 현재 1차 전환 상태
 
 - `calendar_delete`, `gmail_reply`, `gmail_thread_reply` 는 recent history와 baseline extraction을 함께 local LLM에 보내 JSON extraction을 먼저 시도한다.
 - 검증된 extraction JSON이 있으면 그 값을 우선 사용하고, 없으면 기존 parser로 안전하게 fallback 한다.
-- message history와 session state는 이후 후보 선택형 삭제와 참조형 후속 요청 해석의 입력으로 재사용한다.
+- message history와 session state를 활용한 후보 선택형 삭제와 참조형 후속 요청 해석이 구현 완료되었다. 응답에서 번호 목록을 추출(extract_candidates_from_reply)하고, 후속 "두 번째 삭제해줘" 같은 요청에서 순서 참조를 파싱(parse_ordinal_index)하여 해당 후보를 extraction payload에 자동 주입한다.
 - 현재 기본 운영안은 일반 chat 과 structured extraction 모두 host MLX server의 `LFM2-24B-A2B-MLX-4bit` 단일 모델로 처리하는 구성이다.
 
 ## MLX 단일 모델 권장안
