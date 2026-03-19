@@ -252,4 +252,5 @@ def run_workflow(
         "reply": result.get("reply", "처리할 수 없는 요청입니다."),
         "route": result.get("route", "unknown"),
         "action_type": result.get("action_type"),
+        "last_candidates": result.get("last_candidates"),
     }

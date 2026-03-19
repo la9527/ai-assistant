@@ -58,6 +58,11 @@ def classify(state: AssistantState) -> dict:
     else:
         extraction = extract_structured_request(state["message"], state.get("channel"))
     intent = state.get("intent_override") or extraction.intent
+
+    # 이전 gmail_summary 결과에서 특정 항목을 참조하는 경우 → chat으로 전환
+    if intent == "gmail_summary" and extraction.metadata.get("candidate_selected"):
+        intent = "chat"
+
     return {"extraction": extraction, "intent": intent}
 
 
@@ -306,7 +311,20 @@ def execute_gmail_summary(state: AssistantState) -> dict:
         )
         if raw_body is not None:
             reply = format_gmail_summary(raw_body, channel)
-            return {"reply": reply, "route": "n8n", "action_type": None}
+            # n8n items를 후보 목록으로 저장 (후속 참조 대화 지원)
+            items = raw_body.get("items") or []
+            candidates = [
+                {
+                    "index": i,
+                    "label": item.get("subject", ""),
+                    "raw": f"{item.get('sender', '')} - {item.get('subject', '')}",
+                    "sender": item.get("sender", ""),
+                    "snippet": item.get("snippet", ""),
+                    "date": item.get("date", ""),
+                }
+                for i, item in enumerate(items)
+            ] if len(items) >= 2 else []
+            return {"reply": reply, "route": "n8n", "action_type": None, "last_candidates": candidates or None}
     return {
         "reply": "Gmail 자동화를 실행하지 못했습니다. n8n Gmail credential 연결 상태를 확인하세요.",
         "route": "n8n_fallback",
@@ -333,7 +351,28 @@ def execute_chat(state: AssistantState) -> dict:
     message, channel = state["message"], state.get("channel", "")
     memory_context = state.get("memory_context")
     provider_hint = state.get("provider_hint")
-    reply, route = _generate_reply_with_external_fallback(message, channel, memory_context, provider_hint=provider_hint)
+    extraction = state.get("extraction")
+
+    # 이전 대화 후보 항목 참조 시 해당 정보를 LLM 컨텍스트에 주입
+    enriched_message = message
+    if extraction and extraction.metadata.get("candidate_selected"):
+        candidate_data = extraction.metadata.get("candidate_data") or {}
+        if candidate_data:
+            context_parts = ["다음은 이전 대화에서 사용자가 참조한 항목 정보이다:"]
+            if candidate_data.get("sender"):
+                context_parts.append(f"- 보낸사람: {candidate_data['sender']}")
+            if candidate_data.get("label"):
+                context_parts.append(f"- 제목: {candidate_data['label']}")
+            if candidate_data.get("snippet"):
+                context_parts.append(f"- 미리보기: {candidate_data['snippet']}")
+            if candidate_data.get("date"):
+                context_parts.append(f"- 날짜: {candidate_data['date']}")
+            if candidate_data.get("raw"):
+                context_parts.append(f"- 원본: {candidate_data['raw']}")
+            context_parts.append(f"\n사용자 질문: {message}")
+            enriched_message = "\n".join(context_parts)
+
+    reply, route = _generate_reply_with_external_fallback(enriched_message, channel, memory_context, provider_hint=provider_hint)
     return {"reply": reply, "route": route, "action_type": None}
 
 

@@ -574,7 +574,7 @@ def apply_reference_context(
     if ordinal_idx is not None and last_candidates and 0 <= ordinal_idx < len(last_candidates):
         candidate = last_candidates[ordinal_idx]
         candidate_label = candidate.get("label", candidate.get("raw", ""))
-        extraction = _apply_candidate_selection(extraction, candidate_label, ordinal_idx, previous_extraction)
+        extraction = _apply_candidate_selection(extraction, candidate_label, ordinal_idx, previous_extraction, candidate_data=candidate)
 
     if previous_extraction is None:
         return extraction
@@ -601,6 +601,8 @@ def _apply_candidate_selection(
     candidate_label: str,
     index: int,
     previous_extraction: StructuredExtraction | None,
+    *,
+    candidate_data: dict[str, str] | None = None,
 ) -> StructuredExtraction:
     """후보 선택 시 선택된 항목의 라벨을 extraction payload에 주입한다."""
     ref = ExtractionReference(
@@ -615,6 +617,7 @@ def _apply_candidate_selection(
         "candidate_selected": True,
         "candidate_index": index,
         "candidate_label": candidate_label,
+        "candidate_data": candidate_data or {},
     }
 
     # 도메인별 payload에 후보 라벨 주입
@@ -676,8 +679,8 @@ def parse_ordinal_index(message: str) -> int | None:
 # ---------------------------------------------------------------------------
 
 _NUMBERED_ITEM_PATTERN = re.compile(
-    r"^\s*(?:(?P<num>\d+)[.)\]]\s*|[-•]\s*)"
-    r"(?P<text>.+)$",
+    r"^\s*\**(?:(?P<num>\d+)[.)\]]\s*|[-•]\s*)"
+    r"(?P<text>.+?)\**\s*$",
     re.MULTILINE,
 )
 
@@ -692,15 +695,27 @@ def extract_candidates_from_reply(reply: str, route: str) -> list[dict[str, str]
         return []
 
     items = []
+    has_numbered = False
     for m in _NUMBERED_ITEM_PATTERN.finditer(reply):
         text = m.group("text").strip()
         if len(text) < 3:
             continue
+        numbered = m.group("num") is not None
+        if numbered:
+            has_numbered = True
         items.append({
             "index": len(items),
             "label": text[:120],
             "raw": text,
+            "_numbered": numbered,
         })
+
+    # 번호 항목이 있으면 번호 항목만 유지 (markdown 하위 bullet 제외)
+    if has_numbered:
+        items = [it for it in items if it.pop("_numbered")]
+    else:
+        for it in items:
+            it.pop("_numbered", None)
 
     # 최소 2개 이상일 때만 후보 목록으로 취급
     if len(items) < 2:

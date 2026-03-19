@@ -814,5 +814,110 @@ class GenerateExternalReplyProviderHintTests(unittest.TestCase):
         self.assertEqual(route, "fallback")
 
 
+# ---------------------------------------------------------------------------
+# Gmail 후속 참조 (첫번째 메일 내용 알려줘) 관련 테스트
+# ---------------------------------------------------------------------------
+
+class GmailCandidateExtractionTests(unittest.TestCase):
+    """Markdown 볼드 형식의 gmail summary에서 후보 추출 테스트."""
+
+    def test_markdown_bold_numbered_items(self) -> None:
+        reply = (
+            "📬 **최근 메일 요약**\n\n"
+            "**1. 프로젝트 승인**\n"
+            "   - 📤 보낸 사람: boss@company.com\n"
+            "   - 🕐 날짜: 2026-03-20\n\n"
+            "**2. 주간 보고**\n"
+            "   - 📤 보낸 사람: team@company.com\n"
+        )
+        result = extract_candidates_from_reply(reply, "n8n")
+
+        self.assertEqual(len(result), 2)
+        self.assertIn("프로젝트 승인", result[0]["label"])
+        self.assertIn("주간 보고", result[1]["label"])
+
+    def test_compact_format_also_works(self) -> None:
+        reply = "최근 메일 요약입니다.\n1. boss@co.com - 프로젝트 승인\n2. team@co.com - 주간 보고"
+        result = extract_candidates_from_reply(reply, "n8n")
+
+        self.assertEqual(len(result), 2)
+
+
+class GmailFollowupReferenceTests(unittest.TestCase):
+    """이전 gmail_summary 결과를 참조하는 후속 질문 처리 테스트."""
+
+    def _make_extraction(self, message: str, intent: str = "gmail_summary") -> StructuredExtraction:
+        from app.schemas import MailExtractionPayload
+        domain = "mail" if intent.startswith("gmail") else "chat"
+        action = intent.removeprefix("gmail_") if intent.startswith("gmail") else "respond"
+        return StructuredExtraction(
+            raw_message=message,
+            normalizedMessage=message,
+            domain=domain,
+            action=action,
+            intent=intent,
+            confidence=0.85,
+            mail=MailExtractionPayload() if domain == "mail" else None,
+        )
+
+    def test_ordinal_with_gmail_candidates_selects_item(self) -> None:
+        extraction = self._make_extraction("메일의 첫번째 항목 내용을 알려줘")
+        previous = self._make_extraction("최근 메일 요약해줘")
+        candidates = [
+            {"index": 0, "label": "프로젝트 승인", "raw": "boss@co.com - 프로젝트 승인", "sender": "boss@co.com", "snippet": "확인 부탁", "date": "2026-03-20"},
+            {"index": 1, "label": "주간 보고", "raw": "team@co.com - 주간 보고", "sender": "team@co.com", "snippet": "보고 완료", "date": "2026-03-19"},
+        ]
+
+        result = apply_reference_context(extraction, previous, last_candidates=candidates)
+
+        self.assertTrue(result.metadata.get("candidate_selected"))
+        self.assertEqual(result.metadata.get("candidate_index"), 0)
+        self.assertEqual(result.metadata.get("candidate_label"), "프로젝트 승인")
+        # candidate_data에 sender, snippet 등 리치 데이터 포함
+        candidate_data = result.metadata.get("candidate_data", {})
+        self.assertEqual(candidate_data.get("sender"), "boss@co.com")
+        self.assertEqual(candidate_data.get("snippet"), "확인 부탁")
+
+    def test_candidate_selected_gmail_redirects_to_chat(self) -> None:
+        """classify 노드에서 candidate_selected+gmail_summary → chat 전환."""
+        from app.graph.nodes import classify
+
+        extraction = self._make_extraction("메일의 두번째 항목 알려줘")
+        extraction.metadata = {
+            **dict(extraction.metadata),
+            "candidate_selected": True,
+            "candidate_index": 1,
+            "candidate_label": "주간 보고",
+            "candidate_data": {"sender": "team@co.com", "label": "주간 보고"},
+        }
+
+        state = {
+            "message": "메일의 두번째 항목 알려줘",
+            "channel": "webui",
+            "structured_extraction": extraction,
+        }
+
+        result = classify(state)
+
+        self.assertEqual(result["intent"], "chat")
+        self.assertTrue(result["extraction"].metadata.get("candidate_selected"))
+
+    def test_gmail_summary_without_candidate_stays_summary(self) -> None:
+        """candidate_selected가 없으면 gmail_summary 유지."""
+        from app.graph.nodes import classify
+
+        extraction = self._make_extraction("최근 메일 보여줘")
+
+        state = {
+            "message": "최근 메일 보여줘",
+            "channel": "webui",
+            "structured_extraction": extraction,
+        }
+
+        result = classify(state)
+
+        self.assertEqual(result["intent"], "gmail_summary")
+
+
 if __name__ == "__main__":
     unittest.main()

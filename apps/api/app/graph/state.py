@@ -30,3 +30,4 @@ class AssistantState(TypedDict, total=False):
     reply: str
     route: str
     action_type: str | None
+    last_candidates: list[dict[str, str]] | None  # gmail 요약 등에서 추출된 후보 목록
