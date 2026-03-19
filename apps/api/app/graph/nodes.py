@@ -18,10 +18,33 @@ from app.automation import (
     run_macos_automation,
     run_macos_get,
     run_n8n_automation,
+    run_n8n_automation_raw,
 )
 from app.config import settings
 from app.graph.state import AssistantState
-from app.llm import generate_local_reply
+from app.llm import format_gmail_summary, generate_external_reply, generate_local_reply
+
+
+def _generate_reply_with_external_fallback(
+    message: str,
+    channel: str,
+    memory_context: list[dict[str, str]] | None = None,
+    *,
+    provider_hint: str | None = None,
+) -> tuple[str, str]:
+    """외부 LLM이 primary이면 외부 우선, 아니면 로컬 우선으로 응답을 생성한다."""
+    # provider_hint가 있으면 해당 외부 LLM을 사용
+    if provider_hint:
+        reply, route = generate_external_reply(message, channel, memory_context, provider_hint=provider_hint)
+        if route == "external_llm":
+            return reply, route
+        return generate_local_reply(message, channel, memory_context)
+    ext = settings.external_llm
+    if ext.enabled and not ext.fallback_only:
+        reply, route = generate_external_reply(message, channel, memory_context)
+        if route == "external_llm":
+            return reply, route
+    return generate_local_reply(message, channel, memory_context)
 
 
 # ---------------------------------------------------------------------------
@@ -205,8 +228,8 @@ def execute_calendar_summary(state: AssistantState) -> dict:
         reply = run_n8n_automation(message, channel, session_id, user_id, settings.n8n_webhook_path, extra_payload)
         if reply is not None:
             return {"reply": reply, "route": "n8n", "action_type": None}
-    fallback_reply, _ = generate_local_reply(message, channel, memory_context)
-    return {"reply": fallback_reply, "route": "n8n_fallback", "action_type": None}
+    fallback_reply, fallback_route = _generate_reply_with_external_fallback(message, channel, memory_context)
+    return {"reply": fallback_reply, "route": fallback_route, "action_type": None}
 
 
 def execute_calendar_write(state: AssistantState) -> dict:
@@ -277,8 +300,12 @@ def execute_gmail_summary(state: AssistantState) -> dict:
         extra_payload = {"searchQuery": extraction.mail.search_query}
 
     if settings.n8n_gmail_webhook_path:
-        reply = run_n8n_automation(message, channel, session_id, user_id, settings.n8n_gmail_webhook_path, extra_payload)
-        if reply is not None:
+        raw_body = run_n8n_automation_raw(
+            message, channel, session_id, user_id,
+            settings.n8n_gmail_webhook_path, extra_payload,
+        )
+        if raw_body is not None:
+            reply = format_gmail_summary(raw_body, channel)
             return {"reply": reply, "route": "n8n", "action_type": None}
     return {
         "reply": "Gmail 자동화를 실행하지 못했습니다. n8n Gmail credential 연결 상태를 확인하세요.",
@@ -305,7 +332,8 @@ def execute_macos_note(state: AssistantState) -> dict:
 def execute_chat(state: AssistantState) -> dict:
     message, channel = state["message"], state.get("channel", "")
     memory_context = state.get("memory_context")
-    reply, route = generate_local_reply(message, channel, memory_context)
+    provider_hint = state.get("provider_hint")
+    reply, route = _generate_reply_with_external_fallback(message, channel, memory_context, provider_hint=provider_hint)
     return {"reply": reply, "route": route, "action_type": None}
 
 

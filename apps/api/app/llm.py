@@ -1,9 +1,10 @@
 import json
 import logging
+import re
 
 import httpx
 
-from app.config import settings
+from app.config import ExternalLLMSettings, settings
 from app.schemas import StructuredExtraction
 
 
@@ -239,42 +240,307 @@ def generate_local_reply(
         return fallback, "fallback"
 
 
+# ---------------------------------------------------------------------------
+# Gmail summary formatting helpers
+# ---------------------------------------------------------------------------
+
+def _format_gmail_items_markdown(items: list[dict]) -> str:
+    """메일 아이템 목록을 Markdown 테이블 형식으로 포맷한다."""
+    if not items:
+        return "최근 7일 이내 받은편지함 메일이 없습니다."
+
+    lines = ["📬 **최근 메일 요약**", ""]
+    for item in items:
+        idx = item.get("index", "")
+        sender = item.get("sender", "발신자 미상")
+        subject = item.get("subject", "제목 없음")
+        snippet = item.get("snippet", "")
+        date = item.get("date", "")
+
+        lines.append(f"**{idx}. {subject}**")
+        lines.append(f"   - 📤 보낸 사람: {sender}")
+        if date:
+            lines.append(f"   - 🕐 날짜: {date}")
+        if snippet:
+            lines.append(f"   - 💬 미리보기: {snippet}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _format_gmail_items_compact(items: list[dict], reply: str) -> str:
+    """Kakao 등 제한된 채널용 간결한 형식."""
+    if not items:
+        return reply or "최근 7일 이내 받은편지함 메일이 없습니다."
+    lines = ["최근 메일 요약입니다."]
+    for item in items:
+        idx = item.get("index", "")
+        sender = item.get("sender", "발신자 미상")
+        subject = item.get("subject", "제목 없음")
+        lines.append(f"{idx}. {sender} - {subject}")
+    return "\n".join(lines)
+
+
+def format_gmail_summary_with_llm(
+    items: list[dict],
+    channel: str,
+) -> str | None:
+    """외부 LLM을 사용해 메일 요약을 보기 좋게 포맷한다. 실패 시 None 반환."""
+    ext = settings.external_llm
+    if not ext.enabled or not ext.api_key:
+        return None
+
+    items_text = "\n".join(
+        f"- 보낸 사람: {it.get('sender', '?')}, 제목: {it.get('subject', '?')}, "
+        f"미리보기: {it.get('snippet', '')}, 날짜: {it.get('date', '')}"
+        for it in items
+    )
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "당신은 메일 요약 포맷터이다. 아래 메일 목록을 읽기 좋은 Markdown으로 정리해 출력한다.\n"
+                "규칙:\n"
+                "- 각 메일을 번호 매기고, 제목을 굵게, 보낸 사람·날짜·미리보기를 하위 항목으로 정리한다.\n"
+                "- 조치가 필요한 메일은 ⚠️ 아이콘으로 강조한다.\n"
+                "- 마지막에 한 줄 요약(어떤 종류의 메일이 주로 왔는지)을 추가한다.\n"
+                "- 다른 설명이나 인사말을 추가하지 마라. 포맷된 메일 목록만 출력하라."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"다음 메일 목록을 보기 좋게 정리해줘:\n{items_text}",
+        },
+    ]
+
+    try:
+        reply = _call_external_llm(ext, messages, ext.model, temperature=0.2, max_tokens=1024)
+        if reply and len(reply) > 20:
+            return reply
+        return None
+    except Exception as exc:
+        logger.warning("Gmail summary LLM formatting failed: %s", exc)
+        return None
+
+
+def format_gmail_summary(
+    raw_body: dict,
+    channel: str,
+) -> str:
+    """n8n 응답을 채널에 맞는 형식으로 포맷한다. 외부 LLM을 우선 시도한다."""
+    items = raw_body.get("items", [])
+    reply = raw_body.get("reply", "")
+
+    # items가 없으면 reply 텍스트에서 파싱 시도
+    if not items and reply:
+        items = _parse_reply_to_items(reply)
+
+    if not items:
+        return reply or "최근 7일 이내 받은편지함 메일이 없습니다."
+
+    # WebUI 채널: 외부 LLM 포맷 → Markdown 템플릿 → 기본 텍스트 순으로 시도
+    if channel in ("webui", "web", "api"):
+        llm_formatted = format_gmail_summary_with_llm(items, channel)
+        if llm_formatted:
+            return llm_formatted
+        return _format_gmail_items_markdown(items)
+
+    # Kakao 등 기타 채널: 간결한 텍스트
+    return _format_gmail_items_compact(items, reply)
+
+
+def _parse_reply_to_items(reply: str) -> list[dict]:
+    """구버전 n8n reply 텍스트 '1. sender - subject / 2. ...' 를 items로 파싱."""
+    items: list[dict] = []
+    # / 를 줄바꿈으로 정규화하고, 번호 앞에서도 줄바꿈
+    normalized = re.sub(r"\s*/\s*(?=\d+\.)", "\n", reply)
+    normalized = re.sub(r"(?<=[.!?。])\s+(?=\d+\.)", "\n", normalized)
+    # 이메일 주소 내의 하이픈을 보호하기 위해 ' - ' (공백 포함) 구분자로 매칭
+    for line in normalized.split("\n"):
+        line = line.strip()
+        m = re.search(r"(\d+)\.\s*(.+?)\s+- \s*(.+)", line)
+        if m:
+            items.append({
+                "index": int(m.group(1)),
+                "sender": m.group(2).strip(),
+                "subject": m.group(3).strip(),
+                "snippet": "",
+                "date": "",
+            })
+    return items
+
+
 def generate_external_reply(
     message: str,
     channel: str,
     memory_context: list[dict[str, str]] | None = None,
+    *,
+    provider_hint: str | None = None,
 ) -> tuple[str, str]:
-    """외부 LLM(OpenAI/Claude 등)을 통해 응답을 생성한다."""
-    ext = settings.external_llm
+    """외부 LLM(OpenAI/Claude/Gemini 등)을 통해 응답을 생성한다.
+
+    provider_hint가 지정되면 해당 provider 전용 설정을 사용한다.
+    """
+    ext = settings.resolve_external_llm(provider_hint)
     if not ext.enabled or not ext.api_key:
         return "외부 LLM이 설정되지 않았습니다.", "fallback"
 
-    endpoint = f"{ext.base_url.rstrip('/')}/chat/completions"
     messages = _build_local_reply_messages(message, channel, memory_context)
-    payload = {
-        "model": ext.model,
-        "messages": messages,
-        "temperature": 0.3,
-    }
-    headers = {
-        "Authorization": f"Bearer {ext.api_key}",
-        "Content-Type": "application/json",
-    }
-
     try:
-        with httpx.Client(timeout=ext.timeout_seconds) as client:
-            response = client.post(endpoint, json=payload, headers=headers)
-            response.raise_for_status()
-        body = response.json()
-        reply = _normalize_reply_text(body["choices"][0]["message"]["content"])
+        reply = _call_external_llm(ext, messages, ext.model, temperature=0.3)
         if not reply:
             raise ValueError("empty response")
         return reply, "external_llm"
-    except Exception:
+    except Exception as exc:
+        logger.warning("External LLM reply failed provider=%s model=%s error=%s", ext.provider, ext.model, exc)
         return (
             "외부 LLM 응답을 가져오지 못했습니다. "
             f"provider={ext.provider}, model={ext.model}"
         ), "fallback"
+
+
+# ---------------------------------------------------------------------------
+# Multi-provider external LLM dispatcher
+# ---------------------------------------------------------------------------
+
+def _call_external_llm(
+    ext: ExternalLLMSettings,
+    messages: list[dict[str, str]],
+    model: str,
+    *,
+    temperature: float = 0.3,
+    max_tokens: int | None = None,
+    json_mode: bool = False,
+) -> str:
+    """provider에 따라 적절한 API 호출을 수행하고 텍스트 응답을 반환한다."""
+    provider = ext.provider.lower()
+    if provider == "anthropic":
+        return _call_anthropic(ext, messages, model, temperature=temperature, max_tokens=max_tokens)
+    elif provider == "gemini":
+        return _call_gemini(ext, messages, model, temperature=temperature, max_tokens=max_tokens, json_mode=json_mode)
+    else:
+        return _call_openai_compatible(ext, messages, model, temperature=temperature, max_tokens=max_tokens, json_mode=json_mode)
+
+
+def _call_openai_compatible(
+    ext: ExternalLLMSettings,
+    messages: list[dict[str, str]],
+    model: str,
+    *,
+    temperature: float = 0.3,
+    max_tokens: int | None = None,
+    json_mode: bool = False,
+) -> str:
+    """OpenAI 호환 API (OpenAI, Together, Groq 등) 호출."""
+    endpoint = f"{ext.base_url.rstrip('/')}/chat/completions"
+    payload: dict[str, object] = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+    }
+    if max_tokens:
+        payload["max_tokens"] = max_tokens
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+    headers = {
+        "Authorization": f"Bearer {ext.api_key}",
+        "Content-Type": "application/json",
+    }
+    with httpx.Client(timeout=ext.timeout_seconds) as client:
+        response = client.post(endpoint, json=payload, headers=headers)
+        response.raise_for_status()
+    body = response.json()
+    return _normalize_reply_text(body["choices"][0]["message"]["content"])
+
+
+def _call_anthropic(
+    ext: ExternalLLMSettings,
+    messages: list[dict[str, str]],
+    model: str,
+    *,
+    temperature: float = 0.3,
+    max_tokens: int | None = None,
+) -> str:
+    """Anthropic Messages API 호출."""
+    endpoint = f"{ext.base_url.rstrip('/')}/v1/messages"
+    system_parts = []
+    user_messages = []
+    for msg in messages:
+        if msg["role"] == "system":
+            system_parts.append(msg["content"])
+        else:
+            user_messages.append({"role": msg["role"], "content": msg["content"]})
+    if not user_messages:
+        user_messages.append({"role": "user", "content": ""})
+
+    payload: dict[str, object] = {
+        "model": model,
+        "max_tokens": max_tokens or 4096,
+        "messages": user_messages,
+        "temperature": temperature,
+    }
+    if system_parts:
+        payload["system"] = "\n\n".join(system_parts)
+    headers = {
+        "x-api-key": ext.api_key,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+    }
+    with httpx.Client(timeout=ext.timeout_seconds) as client:
+        response = client.post(endpoint, json=payload, headers=headers)
+        response.raise_for_status()
+    body = response.json()
+    text_blocks = [b["text"] for b in body.get("content", []) if b.get("type") == "text"]
+    return _normalize_reply_text("\n".join(text_blocks))
+
+
+def _call_gemini(
+    ext: ExternalLLMSettings,
+    messages: list[dict[str, str]],
+    model: str,
+    *,
+    temperature: float = 0.3,
+    max_tokens: int | None = None,
+    json_mode: bool = False,
+) -> str:
+    """Google Gemini API 호출."""
+    endpoint = (
+        f"{ext.base_url.rstrip('/')}/v1beta/models/{model}:generateContent"
+        f"?key={ext.api_key}"
+    )
+    system_text = ""
+    contents: list[dict] = []
+    for msg in messages:
+        if msg["role"] == "system":
+            system_text += msg["content"] + "\n"
+        else:
+            role = "model" if msg["role"] == "assistant" else "user"
+            contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+    if not contents:
+        contents.append({"role": "user", "parts": [{"text": ""}]})
+
+    payload: dict[str, object] = {"contents": contents}
+    if system_text.strip():
+        payload["systemInstruction"] = {"parts": [{"text": system_text.strip()}]}
+    gen_config: dict[str, object] = {"temperature": temperature}
+    if max_tokens:
+        gen_config["maxOutputTokens"] = max_tokens
+    if json_mode:
+        gen_config["responseMimeType"] = "application/json"
+    payload["generationConfig"] = gen_config
+
+    headers = {"Content-Type": "application/json"}
+    with httpx.Client(timeout=ext.timeout_seconds) as client:
+        response = client.post(endpoint, json=payload, headers=headers)
+        response.raise_for_status()
+    body = response.json()
+    candidates = body.get("candidates", [])
+    if not candidates:
+        raise ValueError("Gemini returned no candidates")
+    parts = candidates[0].get("content", {}).get("parts", [])
+    text = "\n".join(p.get("text", "") for p in parts)
+    return _normalize_reply_text(text)
 
 
 def _strip_json_fence(text: str) -> str:
@@ -304,7 +570,6 @@ def generate_structured_extraction(
     if not settings.local_llm.structured_extraction_enabled:
         return None
 
-    endpoint = f"{settings.local_llm.structured_extraction_base_url.rstrip('/')}/chat/completions"
     intent = str(baseline.get("intent") or "")
     system_prompt = _build_structured_extraction_prompt(intent)
     user_prompt = {
@@ -313,11 +578,90 @@ def generate_structured_extraction(
         "recent_history": history[-8:] if history else [],
         "baseline_extraction": baseline,
     }
+    user_content = json.dumps(user_prompt, ensure_ascii=False)
+
+    # --- 외부 LLM 구조화 추출 시도 ---
+    ext = settings.external_llm
+    if ext.enabled and ext.structured_extraction_enabled and ext.api_key:
+        ext_result = _try_external_structured_extraction(
+            ext, system_prompt, user_content, baseline, message, channel, history,
+        )
+        if ext_result is not None:
+            return ext_result
+        logger.info("External structured extraction failed, falling back to local")
+
+    # --- 로컬 LLM 구조화 추출 ---
+    return _try_local_structured_extraction(
+        system_prompt, user_content, baseline, message, channel, history,
+    )
+
+
+def _try_external_structured_extraction(
+    ext: ExternalLLMSettings,
+    system_prompt: str,
+    user_content: str,
+    baseline: dict[str, object],
+    message: str,
+    channel: str | None,
+    history: list[dict[str, str]] | None,
+) -> StructuredExtraction | None:
+    """외부 LLM으로 구조화 추출을 시도한다."""
+    model = ext.structured_extraction_model or ext.model
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+    intent = str(baseline.get("intent") or "")
+
+    for json_mode in (True, False):
+        try:
+            content = _call_external_llm(
+                ext, messages, model,
+                temperature=0.0,
+                max_tokens=512,
+                json_mode=json_mode,
+            )
+            extraction_raw = _extract_json_object(content)
+            extraction_payload = _sanitize_structured_extraction_payload(
+                json.loads(extraction_raw), baseline, message, channel,
+            )
+            extraction = StructuredExtraction.model_validate(extraction_payload)
+            extraction.metadata = {
+                **dict(extraction.metadata),
+                "schema_mode": "external_llm_structured_extraction",
+                "provider": ext.provider,
+                "model": model,
+                "history_size": len(history or []),
+                "json_mode_used": json_mode,
+                "llm_attempted": True,
+                "llm_used": True,
+            }
+            return extraction
+        except Exception as exc:
+            logger.info(
+                "External structured extraction retry intent=%s provider=%s model=%s json_mode=%s error=%s",
+                intent, ext.provider, model, json_mode, exc,
+            )
+            continue
+    return None
+
+
+def _try_local_structured_extraction(
+    system_prompt: str,
+    user_content: str,
+    baseline: dict[str, object],
+    message: str,
+    channel: str | None,
+    history: list[dict[str, str]] | None,
+) -> StructuredExtraction | None:
+    """로컬 LLM으로 구조화 추출을 시도한다."""
+    endpoint = f"{settings.local_llm.structured_extraction_base_url.rstrip('/')}/chat/completions"
+    intent = str(baseline.get("intent") or "")
     base_payload = {
         "model": settings.local_llm.structured_extraction_model,
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(user_prompt, ensure_ascii=False)},
+            {"role": "user", "content": user_content},
         ],
         "temperature": 0.0,
         "max_tokens": 512,
@@ -335,10 +679,7 @@ def generate_structured_extraction(
             body = response.json()
             content = _extract_json_object(body["choices"][0]["message"]["content"])
             extraction_payload = _sanitize_structured_extraction_payload(
-                json.loads(content),
-                baseline,
-                message,
-                channel,
+                json.loads(content), baseline, message, channel,
             )
             extraction = StructuredExtraction.model_validate(extraction_payload)
             extraction.metadata = {

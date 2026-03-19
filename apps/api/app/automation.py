@@ -1048,6 +1048,7 @@ def process_message(
     approval_granted: bool = False,
     structured_extraction: StructuredExtraction | None = None,
     memory_context: list[dict[str, str]] | None = None,
+    provider_hint: str | None = None,
 ) -> dict[str, str | None]:
     """메시지를 처리한다. LangGraph 워크플로가 사용 가능하면 우선 사용한다."""
     try:
@@ -1061,6 +1062,7 @@ def process_message(
             approval_granted=approval_granted,
             memory_context=memory_context,
             structured_extraction=structured_extraction,
+            provider_hint=provider_hint,
         )
     except Exception as exc:
         logger.warning("LangGraph workflow failed, falling back to legacy: %s", exc)
@@ -1365,6 +1367,42 @@ def run_n8n_automation(
             if isinstance(body.get("message"), str) and body["message"].strip():
                 return body["message"].strip()
         return "자동화 작업을 접수했습니다. 결과를 후속 메시지로 전달하겠습니다."
+    except Exception:
+        return None
+
+
+def run_n8n_automation_raw(
+    message: str,
+    channel: str,
+    session_id: str,
+    user_id: str | None = None,
+    webhook_path: str | None = None,
+    extra_payload: dict[str, str] | None = None,
+) -> dict | None:
+    """n8n 자동화를 호출하고 응답 JSON 딕셔너리 전체를 반환한다."""
+    if not webhook_path:
+        return None
+    endpoint = f"{settings.n8n_base_url.rstrip('/')}/{webhook_path.lstrip('/')}"
+    payload = {
+        "message": message,
+        "channel": channel,
+        "session_id": session_id,
+        "user_id": user_id,
+    }
+    if extra_payload:
+        payload.update(extra_payload)
+    headers: dict[str, str] = {}
+    if settings.n8n_webhook_token:
+        headers["Authorization"] = f"Bearer {settings.n8n_webhook_token}"
+
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            response = client.post(endpoint, json=payload, headers=headers)
+            response.raise_for_status()
+        body = response.json()
+        if isinstance(body, dict):
+            return body
+        return None
     except Exception:
         return None
 
