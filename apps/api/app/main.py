@@ -930,6 +930,7 @@ def _record_assistant_message(
     action_type: str | None = None,
     approval_ticket_id: str | None = None,
     workflow_candidates: list[dict[str, str]] | None = None,
+    workflow_state_data: dict[str, object] | None = None,
 ) -> None:
     message_meta: dict[str, object] = {}
     if action_type:
@@ -951,6 +952,10 @@ def _record_assistant_message(
     # 워크플로에서 직접 제공한 후보가 있으면 우선 사용 (gmail items 등 리치 데이터)
     reply_candidates = workflow_candidates or extract_candidates_from_reply(reply, route)
 
+    state_data = {"last_assistant_reply": reply}
+    if workflow_state_data:
+        state_data.update(workflow_state_data)
+
     upsert_session_state(
         db,
         session_id=session_id,
@@ -958,7 +963,7 @@ def _record_assistant_message(
         pending_action=action_type if route == "approval_required" else None,
         pending_ticket_id=approval_ticket_id if route == "approval_required" else None,
         last_candidates=reply_candidates or None,
-        state_data={"last_assistant_reply": reply},
+        state_data=state_data,
     )
 
 
@@ -1012,7 +1017,17 @@ def _process_kakao_message(
         create_task_run(db, session_id=session.id, task_type=str(result["route"]), detail=utterance)
         reply = str(result["reply"])
 
-    _record_assistant_message(db, session.id, "kakao", reply, str(result["route"]), action_type, approval_ticket_id, workflow_candidates=result.get("last_candidates"))
+        _record_assistant_message(
+            db,
+            session.id,
+            "kakao",
+            reply,
+            str(result["route"]),
+            action_type,
+            approval_ticket_id,
+            workflow_candidates=result.get("last_candidates"),
+            workflow_state_data={"last_mail_result_context": result.get("mail_result_context")} if result.get("mail_result_context") else None,
+        )
 
     return session.id, reply, str(result["route"]), approval_ticket_id, action_type
 
@@ -1396,6 +1411,7 @@ def _chat_impl(payload: ChatRequest, db: Session, *, provider_hint: str | None =
         str(result["action_type"]) if result["action_type"] else None,
         approval_ticket_id,
         workflow_candidates=result.get("last_candidates"),
+            workflow_state_data={"last_mail_result_context": result.get("mail_result_context")} if result.get("mail_result_context") else None,
     )
     return ChatResponse(
         reply=reply,
@@ -2212,7 +2228,17 @@ def _process_slack_message(
         create_task_run(db, session_id=session.id, task_type=str(result["route"]), detail=message)
         reply = str(result["reply"])
 
-    _record_assistant_message(db, session.id, "slack", reply, str(result["route"]), action_type, approval_ticket_id, workflow_candidates=result.get("last_candidates"))
+        _record_assistant_message(
+            db,
+            session.id,
+            "slack",
+            reply,
+            str(result["route"]),
+            action_type,
+            approval_ticket_id,
+            workflow_candidates=result.get("last_candidates"),
+            workflow_state_data={"last_mail_result_context": result.get("mail_result_context")} if result.get("mail_result_context") else None,
+        )
 
     return session.id, reply, str(result["route"]), approval_ticket_id, action_type
 

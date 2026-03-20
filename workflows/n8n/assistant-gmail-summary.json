@@ -7,7 +7,7 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "assistant-gmail-summary",
-        "responseMode": "responseNode",
+        "responseMode": "lastNode",
         "options": {}
       },
       "id": "gmail-webhook-node",
@@ -71,7 +71,7 @@
   "connections": {
     "Webhook": { "main": [[{ "node": "Get Recent Gmail Messages", "type": "main", "index": 0 }]] },
     "Get Recent Gmail Messages": { "main": [[{ "node": "Summarize Gmail Messages", "type": "main", "index": 0 }]] },
-    "Summarize Gmail Messages": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] }
+    "Summarize Gmail Messages": { "main": [] }
   },
   "settings": {},
   "pinData": {},

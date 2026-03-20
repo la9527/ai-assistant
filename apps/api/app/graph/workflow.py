@@ -260,4 +260,5 @@ def run_workflow(
         "route": result.get("route", "unknown"),
         "action_type": result.get("action_type"),
         "last_candidates": result.get("last_candidates"),
+        "mail_result_context": result.get("mail_result_context"),
     }

@@ -7,7 +7,7 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "assistant-gmail-detail",
-        "responseMode": "responseNode",
+        "responseMode": "lastNode",
         "options": {}
       },
       "id": "gmail-detail-webhook-node",
@@ -57,7 +57,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const request = $('Normalize Detail Request').first().json;\nconst candidates = $input.all().map((item) => item.json).filter((mail) => mail && (mail.id || mail.payload));\n\nif (!candidates.length) {\n  return [{ json: {\n    action: 'gmail-detail',\n    found: false,\n    reply: '요청한 조건에 맞는 메일을 찾지 못했습니다. 제목이나 발신자, 조회 범위를 더 구체적으로 알려주세요.'\n  }}];\n}\n\nconst readHeader = (headers, key) => {\n  if (!Array.isArray(headers)) return '';\n  const matched = headers.find((header) => String(header.name || '').toLowerCase() === key.toLowerCase());\n  return matched?.value || '';\n};\n\nconst decodeBase64Url = (value) => {\n  if (!value) return '';\n  try {\n    const normalized = String(value).replace(/-/g, '+').replace(/_/g, '/');\n    const pad = normalized.length % 4;\n    const padded = normalized + (pad ? '='.repeat(4 - pad) : '');\n    return Buffer.from(padded, 'base64').toString('utf8');\n  } catch (e) {\n    return '';\n  }\n};\n\nconst extractTextPart = (part) => {\n  if (!part || typeof part !== 'object') return '';\n  if (part.mimeType === 'text/plain' && part.body?.data) {\n    return decodeBase64Url(part.body.data);\n  }\n  if (Array.isArray(part.parts)) {\n    for (const child of part.parts) {\n      const extracted = extractTextPart(child);\n      if (extracted) return extracted;\n    }\n  }\n  return '';\n};\n\nconst pick = (() => {\n  if (request.message_id) {\n    const matched = candidates.find((mail) => String(mail.id || '') === String(request.message_id));\n    if (matched) return matched;\n  }\n  if (request.thread_id) {\n    const matched = candidates.find((mail) => String(mail.threadId || '') === String(request.thread_id));\n    if (matched) return matched;\n  }\n  return candidates[0];\n})();\n\nconst headers = pick.payload?.headers || [];\nconst subject = pick.subject || readHeader(headers, 'Subject') || '(제목 없음)';\nconst sender = pick.from?.text || readHeader(headers, 'From') || '발신자 미상';\nconst to = readHeader(headers, 'To') || '';\nconst date = readHeader(headers, 'Date') || '';\nconst snippet = String(pick.snippet || '').trim();\nconst bodyText = extractTextPart(pick.payload || {});\nconst plainBody = bodyText ? bodyText.replace(/\s+/g, ' ').trim() : '';\n\nconst lines = [\n  '📩 메일 상세 정보',\n  `- 제목: ${subject}`,\n  `- 보낸 사람: ${sender}`,\n  date ? `- 날짜: ${date}` : null,\n  to ? `- 받는 사람: ${to}` : null,\n  `- 메시지 ID: ${pick.id || ''}`,\n  `- 스레드 ID: ${pick.threadId || ''}`,\n  snippet ? `- 미리보기: ${snippet}` : null,\n].filter(Boolean);\n\nif (request.detail_level === 'full' && plainBody) {\n  const bodyPreview = plainBody.length > 1600 ? `${plainBody.slice(0, 1600)}...` : plainBody;\n  lines.push('', '본문:', bodyPreview);\n}\n\nreturn [{ json: {\n  action: 'gmail-detail',\n  found: true,\n  messageId: String(pick.id || ''),\n  threadId: String(pick.threadId || ''),\n  detailLevel: request.detail_level,\n  reply: lines.join('\\n'),\n}}];"
+        "jsCode": "const request = $('Normalize Detail Request').first().json;\nconst candidates = $input.all().map((item) => item.json).filter((mail) => mail && (mail.id || mail.payload));\n\nif (!candidates.length) {\n  return [{ json: {\n    action: 'gmail-detail',\n    found: false,\n    reply: '요청한 조건에 맞는 메일을 찾지 못했습니다. 제목이나 발신자, 조회 범위를 더 구체적으로 알려주세요.'\n  }}];\n}\n\nconst readHeader = (headers, key) => {\n  if (!Array.isArray(headers)) return '';\n  const matched = headers.find((header) => String(header.name || '').toLowerCase() === key.toLowerCase());\n  return matched?.value || '';\n};\n\nconst decodeBase64Url = (value) => {\n  if (!value) return '';\n  try {\n    const normalized = String(value).replace(/-/g, '+').replace(/_/g, '/');\n    const pad = normalized.length % 4;\n    const padded = normalized + (pad ? '='.repeat(4 - pad) : '');\n    return Buffer.from(padded, 'base64').toString('utf8');\n  } catch (e) {\n    return '';\n  }\n};\n\nconst extractTextPart = (part) => {\n  if (!part || typeof part !== 'object') return '';\n  if (part.mimeType === 'text/plain' && part.body?.data) {\n    return decodeBase64Url(part.body.data);\n  }\n  if (Array.isArray(part.parts)) {\n    for (const child of part.parts) {\n      const extracted = extractTextPart(child);\n      if (extracted) return extracted;\n    }\n  }\n  return '';\n};\n\nconst pick = (() => {\n  if (request.message_id) {\n    const matched = candidates.find((mail) => String(mail.id || '') === String(request.message_id));\n    if (matched) return matched;\n  }\n  if (request.thread_id) {\n    const matched = candidates.find((mail) => String(mail.threadId || '') === String(request.thread_id));\n    if (matched) return matched;\n  }\n  return candidates[0];\n})();\n\nconst headers = pick.payload?.headers || [];\nconst subject = pick.subject || readHeader(headers, 'Subject') || '(제목 없음)';\nconst sender = pick.from?.text || readHeader(headers, 'From') || '발신자 미상';\nconst to = readHeader(headers, 'To') || '';\nconst date = readHeader(headers, 'Date') || '';\nconst snippet = String(pick.snippet || '').trim();\nconst bodyText = extractTextPart(pick.payload || {});\nconst plainBody = bodyText ? bodyText.replace(/\\s+/g, ' ').trim() : '';\n\nconst lines = [\n  '📩 메일 상세 정보',\n  `- 제목: ${subject}`,\n  `- 보낸 사람: ${sender}`,\n  date ? `- 날짜: ${date}` : null,\n  to ? `- 받는 사람: ${to}` : null,\n  `- 메시지 ID: ${pick.id || ''}`,\n  `- 스레드 ID: ${pick.threadId || ''}`,\n  snippet ? `- 미리보기: ${snippet}` : null,\n].filter(Boolean);\n\nif (request.detail_level === 'full' && plainBody) {\n  const bodyPreview = plainBody.length > 1600 ? `${plainBody.slice(0, 1600)}...` : plainBody;\n  lines.push('', '본문:', bodyPreview);\n}\n\nreturn [{ json: {\n  action: 'gmail-detail',\n  found: true,\n  messageId: String(pick.id || ''),\n  threadId: String(pick.threadId || ''),\n  detailLevel: request.detail_level,\n  reply: lines.join('\\n'),\n}}];"
       },
       "id": "gmail-detail-build-node",
       "name": "Build Detail Response",
@@ -113,15 +113,7 @@
       ]
     },
     "Build Detail Response": {
-      "main": [
-        [
-          {
-            "node": "Respond to Webhook",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": []
     }
   },
   "settings": {},

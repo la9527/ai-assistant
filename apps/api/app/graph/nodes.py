@@ -27,6 +27,19 @@ from app.graph.state import AssistantState
 from app.llm import format_gmail_summary, generate_external_reply, generate_local_reply
 
 
+def _build_mail_result_context(raw_body: dict, items: list[dict], *, mode: str, selected_item: dict | None = None) -> dict:
+    return {
+        "mode": mode,
+        "query": raw_body.get("query") or raw_body.get("searchQuery") or "",
+        "items": items,
+        "hasMore": bool(raw_body.get("hasMore")),
+        "nextCursor": raw_body.get("nextCursor"),
+        "groupByDate": bool(raw_body.get("groupByDate")),
+        "selectedMessageId": (selected_item or {}).get("messageId") or (selected_item or {}).get("message_id"),
+        "selectedThreadId": (selected_item or {}).get("threadId") or (selected_item or {}).get("thread_id"),
+    }
+
+
 def _generate_reply_with_external_fallback(
     message: str,
     channel: str,
@@ -354,7 +367,13 @@ def execute_gmail_summary(state: AssistantState) -> dict:
                 }
                 for i, item in enumerate(items)
             ] if len(items) >= 2 else []
-            return {"reply": reply, "route": "n8n", "action_type": None, "last_candidates": candidates or None}
+            return {
+                "reply": reply,
+                "route": "n8n",
+                "action_type": None,
+                "last_candidates": candidates or None,
+                "mail_result_context": _build_mail_result_context(raw_body, items, mode="list"),
+            }
     return {
         "reply": "Gmail 자동화를 실행하지 못했습니다. n8n Gmail credential 연결 상태를 확인하세요.",
         "route": "n8n_fallback",
@@ -384,7 +403,16 @@ def execute_gmail_detail(state: AssistantState) -> dict:
     )
     if raw_body is not None:
         reply = raw_body.get("reply") if isinstance(raw_body.get("reply"), str) else "메일 상세 정보를 조회했습니다."
-        return {"reply": reply, "route": "n8n", "action_type": None}
+        selected_item = {
+            "messageId": raw_body.get("messageId") or raw_body.get("message_id"),
+            "threadId": raw_body.get("threadId") or raw_body.get("thread_id"),
+        }
+        return {
+            "reply": reply,
+            "route": "n8n",
+            "action_type": None,
+            "mail_result_context": _build_mail_result_context(raw_body, [], mode="detail", selected_item=selected_item),
+        }
     return {
         "reply": "Gmail 상세 조회를 실행하지 못했습니다. n8n workflow 또는 Gmail credential 상태를 확인하세요.",
         "route": "n8n_fallback",
