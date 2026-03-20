@@ -213,6 +213,8 @@
 4. OAuth Client redirect URI를 `http://127.0.0.1:5678/rest/oauth2-credential/callback` 로 맞춘다.
 5. Gmail credential 연결 후 `assistant-gmail-summary` workflow가 `gmailOAuth2` credential을 사용하는지 확인한다.
 
+주의: 브라우저에서 `localhost:5678` 로 열고 redirect URI를 `127.0.0.1:5678` 로 등록하는 식으로 host를 섞으면 OAuth callback 이후 `Unauthorized` 가 발생할 수 있다. 접속 주소와 redirect URI를 둘 다 `127.0.0.1` 기준으로 유지한다.
+
 ## 다음 권장 작업
 
 - 현재 workflow는 최근 메일 5건 제목과 발신자 요약, 메일 초안 작성, 실제 발송, 메일 회신, thread 이어쓰기까지 구현되어 있다.

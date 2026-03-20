@@ -1344,7 +1344,7 @@ def _process_message_legacy(
         parsed = _mail_payload_to_detail_request(extraction.mail) if extraction.mail else parse_gmail_detail_request(message)
         if parsed is None:
             return {
-                "reply": "메일 상세 조회 대상을 찾지 못했습니다. 예: 1번 메일 상세 보여줘 또는 message id:xxxxx",
+                "reply": "메일 상세 조회 대상을 찾지 못했습니다.\n같은 대화에서 먼저 메일 목록을 보여준 뒤 '1번 메일 상세 보여줘'처럼 요청하거나 'message id:xxxxx' 형식으로 직접 지정해 주세요.",
                 "route": "validation_error",
                 "action_type": intent,
             }

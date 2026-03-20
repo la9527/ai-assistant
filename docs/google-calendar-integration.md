@@ -10,6 +10,8 @@
 - 샘플 자동화 webhook: `http://127.0.0.1:5678/webhook/assistant-automation`
 - FastAPI 내부 자동화 호출 경로: `N8N_BASE_URL=http://n8n:5678`
 
+중요: 브라우저 접속 주소와 OAuth redirect URI는 `localhost` 가 아니라 반드시 `127.0.0.1` 로 통일한다. 두 host를 섞으면 n8n 세션 cookie와 OAuth callback host가 어긋나 `Unauthorized` 가 발생할 수 있다.
+
 ## 권장 연결 방식
 
 개인 Google Calendar를 연결하는 경우에는 `OAuth2` 기반 `Google Calendar` credential을 `n8n`에 등록하는 방식이 가장 현실적이다.

@@ -76,6 +76,16 @@ class ProcessMessageFallbackTests(unittest.TestCase):
         )
         self.assertEqual(result["route"], "validation_error")
 
+    def test_gmail_detail_without_context_returns_guidance(self):
+        from app.automation import _process_message_legacy
+        result = _process_message_legacy(
+            message="메일 자세히 보여줘",
+            channel="test",
+            session_id="s1",
+        )
+        self.assertEqual(result["route"], "validation_error")
+        self.assertIn("같은 대화에서 먼저 메일 목록", result["reply"])
+
 
 class MacOSNewIntentsTests(unittest.TestCase):
     """새 macOS 인텐트 분류 및 라우팅 검증."""
