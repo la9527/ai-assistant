@@ -129,7 +129,7 @@ services:
     restart: unless-stopped
 
   n8n:
-    image: n8nio/n8n:1.111.0
+    image: n8nio/n8n:2.12.3
     env_file:
       - ../../.env
     ports:

@@ -404,7 +404,7 @@ def _resolve_kakao_session(
         session = get_latest_session_for_user(db, user_id)
         if session is not None:
             return update_session_message(db, session, utterance)
-    return create_session(db, channel="kakao", user_id=user_id, message=utterance)
+    return create_session(db, channel="kakao", user_id=user_id, message=utterance, session_id=session_id)
 
 
 def _resolve_internal_user_id(
@@ -434,7 +434,7 @@ def _resolve_channel_session(
         session = get_latest_session_for_user(db, internal_user_id)
         if session is not None:
             return update_session_message(db, session, message)
-    return create_session(db, channel=channel, user_id=internal_user_id, message=message)
+    return create_session(db, channel=channel, user_id=internal_user_id, message=message, session_id=session_id)
 
 
 def _user_identity_response(identity) -> UserIdentityResponse:

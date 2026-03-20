@@ -19,8 +19,17 @@ def get_session_by_id(db: Session, session_id: str) -> AssistantSession | None:
     return db.get(AssistantSession, session_id)
 
 
-def create_session(db: Session, channel: str, user_id: str | None, message: str) -> AssistantSession:
-    session = AssistantSession(channel=channel, user_id=user_id, last_message=message)
+def create_session(
+    db: Session,
+    channel: str,
+    user_id: str | None,
+    message: str,
+    session_id: str | None = None,
+) -> AssistantSession:
+    session_kwargs = {"channel": channel, "user_id": user_id, "last_message": message}
+    if session_id and len(session_id) <= 36:
+        session_kwargs["id"] = session_id
+    session = AssistantSession(**session_kwargs)
     db.add(session)
     db.commit()
     db.refresh(session)

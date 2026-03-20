@@ -177,6 +177,7 @@ Kakao 채널을 추가한다.
 - 공통 extraction envelope와 calendar, mail, note 도메인 payload schema를 추가했다.
 - session별 message history 저장 테이블과 state 저장 테이블을 추가했다.
 - `POST /assistant/api/chat`, Slack, Kakao 처리 시 사용자 원문, assistant 응답, 승인 관련 상태를 함께 적재한다.
+- `POST /assistant/api/chat` 는 신규 세션 생성 시 요청에 포함된 `session_id` 를 우선 사용하므로, 클라이언트는 최초 응답 이후 동일한 `session_id` 를 계속 재사용해야 목록-상세 같은 후속 참조 요청이 유지된다.
 - `GET /assistant/api/sessions/{session_id}/messages`, `GET /assistant/api/sessions/{session_id}/state` 로 최근 문맥과 상태를 조회할 수 있다.
 - `user_identities` 저장 구조를 추가해 Slack, Kakao, Web 외부 사용자 ID를 공통 내부 사용자 ID로 연결할 수 있다.
 - `POST /assistant/api/users/identities/resolve`, `POST /assistant/api/users/identities/link`, `GET /assistant/api/users/{internal_user_id}/identities` 로 채널 사용자 매핑을 조회하고 연결할 수 있다.
