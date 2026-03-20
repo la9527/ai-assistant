@@ -10,6 +10,7 @@
         ├─ gmail_compose     → check_approval → execute_gmail_compose → END
         ├─ gmail_reply       → check_approval → execute_gmail_reply   → END
         ├─ gmail_summary     → execute_gmail_summary    → END
+        ├─ gmail_detail      → execute_gmail_detail     → END
         ├─ macos_note        → check_approval → execute_macos_note    → END
         ├─ macos_reminder    → check_approval → execute_macos_reminder → END
         ├─ macos_volume_get  → execute_macos_volume_get → END
@@ -31,6 +32,7 @@ from app.graph.nodes import (
     execute_calendar_write,
     execute_chat,
     execute_gmail_compose,
+    execute_gmail_detail,
     execute_gmail_reply,
     execute_gmail_summary,
     execute_macos_darkmode,
@@ -64,8 +66,10 @@ def _route_after_validate(state: AssistantState) -> str:
         return "check_approval_gmail_compose"
     if intent in {"gmail_reply", "gmail_thread_reply"}:
         return "check_approval_gmail_reply"
-    if intent == "gmail_summary":
+    if intent in {"gmail_summary", "gmail_list"}:
         return "execute_gmail_summary"
+    if intent == "gmail_detail":
+        return "execute_gmail_detail"
     if intent == "macos_note_create":
         return "check_approval_macos_note"
     if intent == "macos_reminder_create":
@@ -115,6 +119,7 @@ def build_assistant_graph() -> StateGraph:
     graph.add_node("execute_calendar_summary", execute_calendar_summary)
     graph.add_node("execute_calendar_write", execute_calendar_write)
     graph.add_node("execute_gmail_compose", execute_gmail_compose)
+    graph.add_node("execute_gmail_detail", execute_gmail_detail)
     graph.add_node("execute_gmail_reply", execute_gmail_reply)
     graph.add_node("execute_gmail_summary", execute_gmail_summary)
     graph.add_node("execute_macos_note", execute_macos_note)
@@ -142,6 +147,7 @@ def build_assistant_graph() -> StateGraph:
             "check_approval_gmail_compose": "check_approval_gmail_compose",
             "check_approval_gmail_reply": "check_approval_gmail_reply",
             "execute_gmail_summary": "execute_gmail_summary",
+            "execute_gmail_detail": "execute_gmail_detail",
             "check_approval_macos_note": "check_approval_macos_note",
             "check_approval_macos_reminder": "check_approval_macos_reminder",
             "execute_macos_volume_get": "execute_macos_volume_get",
@@ -195,6 +201,7 @@ def build_assistant_graph() -> StateGraph:
     graph.add_edge("execute_calendar_summary", END)
     graph.add_edge("execute_calendar_write", END)
     graph.add_edge("execute_gmail_compose", END)
+    graph.add_edge("execute_gmail_detail", END)
     graph.add_edge("execute_gmail_reply", END)
     graph.add_edge("execute_gmail_summary", END)
     graph.add_edge("execute_macos_note", END)

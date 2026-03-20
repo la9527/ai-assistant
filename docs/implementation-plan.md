@@ -85,6 +85,7 @@
 ## 현재 기준 남은 우선순위
 
 - [ ] 1. `docs/implementation-plan.md`, `README.md`, `docs/architecture.md` 기준의 문서 상태를 계속 동기화한다.
+- [ ] 1-1. Gmail 읽기 기능을 `gmail_list`, `gmail_detail`, `gmail_thread` 구조로 재설계하고, 문서 설계와 실제 schema/workflow 구현을 순차 반영한다.
 - [x] 2. 공통 extraction schema를 기준으로 calendar, mail, note 요청을 순차적으로 LLM JSON extraction 기반으로 전환한다.
 - [x] 3. session history와 state 저장 구조를 활용해 참조형 요청, 후보 선택형 삭제, 승인 후 재개 흐름을 보강한다. 순서 참조("두 번째", "1번") 파싱, 응답 후보 추출, 세션 상태 기반 후보 선택 적용, 도메인 계승 로직 구현 완료.
 - [ ] 4. Slack 앱 설정에 `/assistant/api/slack/events`, `/assistant/api/slack/interactions` 를 반영하고 실제 워크스페이스에서 검증한다.
@@ -123,6 +124,54 @@
   - [x] 1차: `calendar_delete`, `gmail_reply`, `gmail_thread_reply`
   - [x] 2차: `calendar_create`, `calendar_update`, `gmail_draft`, `gmail_send`
   - [x] 3차: summary/list 계열 조회에 시간 범위 파싱(오늘/이번 주/내일 등) 추가, Gmail 검색 조건 자동 생성, 실행 노드에서 n8n으로 필터 전달 구현 완료
+
+## Gmail 읽기 확장 작업안
+
+### 목표
+
+- 메일 읽기 기능을 최근 5건 요약 중심에서 `목록 조회`, `상세 조회`, `스레드 조회` 구조로 확장한다.
+- LLM이 조회 의도를 인식하고, FastAPI/LangGraph가 검증된 파라미터로 n8n workflow를 호출하는 구조를 만든다.
+- WebUI와 Kakao에서 날짜별 그룹화, 상세 보기, 더보기, 다건 선택을 지원할 수 있는 공통 응답 모델을 만든다.
+
+### 작업 단계
+
+1. schema 확장
+- `MailExtractionPayload` 에 `limit`, `cursor`, `groupByDate`, `detailLevel`, `selectedIndexes` 성격의 필드를 추가한다.
+- 기존 `searchQuery`, `messageReference`, `threadReference` 와 충돌하지 않도록 하위 호환을 유지한다.
+
+2. intent/skill 확장
+- `gmail_summary` 를 당장 제거하지 않고 alias 성격으로 유지한다.
+- 내부 구현은 `gmail_list`, `gmail_detail`, `gmail_thread` 로 분리한다.
+- 읽기 계열은 승인 없는 low-risk skill 로 유지한다.
+
+3. n8n workflow 확장
+- `assistant-gmail-summary` 를 목록 조회용으로 일반화하거나 `assistant-gmail-list` 로 이관한다.
+- `assistant-gmail-detail`, `assistant-gmail-thread` workflow를 추가한다.
+- 목록 items 에 `messageId`, `threadId`, `internalDate`, `unread`, `hasAttachments` 를 포함한다.
+
+4. 세션 상태 확장
+- `last_candidates` 외에 마지막 메일 조회 컨텍스트를 저장한다.
+- `더보기`, `첫 번째`, `3번과 5번`, `같은 스레드` 같은 후속 요청이 직전 검색 결과를 재사용할 수 있어야 한다.
+
+5. 렌더러 개선
+- WebUI: 날짜 헤더 기반 Markdown 목록
+- Kakao: compact 목록 + `quickReplies`
+- 동일한 items 데이터 구조를 채널별로 다르게 렌더링한다.
+
+### 권장 구현 순서
+
+1. `gmail_list` 확장
+2. `gmail_detail` 추가
+3. session state mail context 저장
+4. `gmail_thread` 추가
+5. Kakao/WebUI UX 보강
+
+### 완료 기준
+
+- `오늘 메일 10건 보여줘` 요청이 검색 조건과 건수를 반영해 목록을 반환한다.
+- `첫 번째 메일 자세히 보여줘` 요청이 `messageId` 기반 상세 조회로 연결된다.
+- `1번과 3번 요약해줘` 또는 `다음 10건 더 보여줘` 같은 후속 요청이 세션 상태를 활용해 동작한다.
+- WebUI는 날짜별 그룹이 보이고, Kakao는 compact 목록과 후속 선택 동선을 제공한다.
 
 ## 현재 1차 전환 상태
 

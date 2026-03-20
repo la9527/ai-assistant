@@ -94,6 +94,15 @@ flowchart TB
 - 자동화 실행은 자유 텍스트가 아니라 검증된 extraction JSON을 기준으로 수행한다.
 - 현재는 rule-based baseline extraction을 먼저 저장하고, 이후 동일 schema에 LLM JSON extraction을 연결한다.
 
+### 2-2. 메일 읽기 기능은 단일 요약이 아니라 읽기 도구 집합으로 확장한다
+
+- 메일 읽기 기능은 `gmail_summary` 하나로 오래 유지하지 않는다.
+- 목표 구조는 `gmail_list`, `gmail_detail`, `gmail_thread` 로 분리된 읽기 도구 집합이다.
+- LLM은 사용자의 의도를 해석해 적절한 읽기 도구와 파라미터를 선택한다.
+- FastAPI/LangGraph는 구조화 추출, 세션 상태, 후보 선택, 후속 참조 해석을 담당한다.
+- n8n은 실제 Gmail API 호출과 결과 정규화를 담당한다.
+- 이 구조를 통해 날짜별 그룹화, 더보기, 다건 선택, 상세 조회, 스레드 조회를 공통 모델 위에서 확장할 수 있다.
+
 ### 3. 로컬 우선, 필요할 때만 외부 모델 사용
 
 기본 응답은 로컬 모델을 사용하고, 아래 조건에서만 외부 모델로 보낸다.
@@ -258,6 +267,14 @@ LangGraph에 과도한 영역:
 
 - `workflows/n8n/assistant-automation.json`
 - webhook 경로는 `/webhook/assistant-automation`
+
+메일 읽기 확장 시에는 아래 workflow 구성을 권장한다.
+
+- `assistant-gmail-list`
+- `assistant-gmail-detail`
+- `assistant-gmail-thread`
+
+기존 `assistant-gmail-summary` 는 초기 하위 호환 경로로 유지하되, 내부적으로는 목록 조회 workflow 성격으로 점진 전환한다.
 - 현재는 `assistant-automation`, `assistant-calendar-create`, `assistant-calendar-update`, `assistant-calendar-delete`, `assistant-gmail-summary`, `assistant-gmail-draft`, `assistant-gmail-send`, `assistant-gmail-reply` workflow로 분리되어 있다.
 - 캘린더 쓰기와 메일 초안, 발송, 회신은 모두 승인 티켓 이후에만 실행한다.
 - Gmail 자동화는 최근 메일 요약, 초안 작성, 실제 발송, 제목 또는 발신자 기반 회신 대상 선택, `thread` 이어쓰기까지 검증되어 있다.

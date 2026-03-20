@@ -15,6 +15,32 @@ GMAIL_SUMMARY_SKILL = SkillDescriptor(
     risk_level="low",
 )
 
+GMAIL_LIST_SKILL = SkillDescriptor(
+    skill_id="gmail_list",
+    name="메일 목록 조회",
+    description="조건에 맞는 메일 목록을 조회한다.",
+    domain="mail",
+    action="list",
+    trigger_keywords=["메일", "이메일", "gmail", "목록", "리스트", "더보기", "여러 건"],
+    executor_type="n8n",
+    executor_ref="N8N_GMAIL_SUMMARY_WEBHOOK_PATH",
+    approval_required=False,
+    risk_level="low",
+)
+
+GMAIL_DETAIL_SKILL = SkillDescriptor(
+    skill_id="gmail_detail",
+    name="메일 상세 조회",
+    description="선택한 메일의 상세 정보와 본문을 조회한다.",
+    domain="mail",
+    action="detail",
+    trigger_keywords=["메일", "이메일", "gmail", "상세", "자세히", "본문", "원문", "내용"],
+    executor_type="n8n",
+    executor_ref="N8N_GMAIL_DETAIL_WEBHOOK_PATH",
+    approval_required=False,
+    risk_level="low",
+)
+
 GMAIL_DRAFT_SKILL = SkillDescriptor(
     skill_id="gmail_draft",
     name="메일 초안 작성",
@@ -69,6 +95,8 @@ GMAIL_THREAD_REPLY_SKILL = SkillDescriptor(
 
 SKILLS = [
     GMAIL_SUMMARY_SKILL,
+    GMAIL_LIST_SKILL,
+    GMAIL_DETAIL_SKILL,
     GMAIL_DRAFT_SKILL,
     GMAIL_SEND_SKILL,
     GMAIL_REPLY_SKILL,

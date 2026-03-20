@@ -6,10 +6,12 @@ from app.automation import (
     ACTION_LABELS,
     _calendar_payload_to_request,
     _mail_payload_to_compose_request,
+    _mail_payload_to_detail_request,
     _mail_payload_to_reply_request,
     extract_structured_request,
     parse_calendar_request,
     parse_gmail_compose_request,
+    parse_gmail_detail_request,
     parse_gmail_reply_request,
     parse_macos_finder_open_request,
     parse_macos_note_request,
@@ -59,8 +61,8 @@ def classify(state: AssistantState) -> dict:
         extraction = extract_structured_request(state["message"], state.get("channel"))
     intent = state.get("intent_override") or extraction.intent
 
-    # 이전 gmail_summary 결과에서 특정 항목을 참조하는 경우 → chat으로 전환
-    if intent == "gmail_summary" and extraction.metadata.get("candidate_selected"):
+    # 이전 gmail_summary/gmail_list 결과에서 특정 항목을 참조하는 경우 → chat으로 전환
+    if intent in {"gmail_summary", "gmail_list"} and extraction.metadata.get("candidate_selected"):
         intent = "chat"
 
     return {"extraction": extraction, "intent": intent}
@@ -123,6 +125,21 @@ def validate(state: AssistantState) -> dict:
             return {
                 "parsed_params": None,
                 "reply": "메일 회신 요청을 이해하지 못했습니다. 예: 제목 AI Assistant Gmail 발송 테스트 내용 확인했습니다 메일에 답장해줘",
+                "route": "validation_error",
+                "action_type": intent,
+            }
+        return {"parsed_params": parsed}
+
+    if intent == "gmail_detail":
+        parsed = (
+            _mail_payload_to_detail_request(extraction.mail)
+            if extraction and extraction.mail
+            else parse_gmail_detail_request(message)
+        )
+        if parsed is None:
+            return {
+                "parsed_params": None,
+                "reply": "메일 상세 조회 대상을 찾지 못했습니다. 예: 1번 메일 상세 보여줘 또는 message id:xxxxx",
                 "route": "validation_error",
                 "action_type": intent,
             }
@@ -301,8 +318,19 @@ def execute_gmail_summary(state: AssistantState) -> dict:
     extraction = state.get("extraction")
 
     extra_payload: dict[str, str] | None = None
-    if extraction and extraction.mail and extraction.mail.search_query:
-        extra_payload = {"searchQuery": extraction.mail.search_query}
+    if extraction and extraction.mail:
+        mail = extraction.mail
+        extra: dict[str, str] = {}
+        if mail.search_query:
+            extra["searchQuery"] = mail.search_query
+        if mail.limit:
+            extra["limit"] = str(mail.limit)
+        if mail.cursor:
+            extra["cursor"] = mail.cursor
+        if mail.group_by_date is not None:
+            extra["groupByDate"] = "true" if mail.group_by_date else "false"
+        if extra:
+            extra_payload = extra
 
     if settings.n8n_gmail_webhook_path:
         raw_body = run_n8n_automation_raw(
@@ -321,12 +349,44 @@ def execute_gmail_summary(state: AssistantState) -> dict:
                     "sender": item.get("sender", ""),
                     "snippet": item.get("snippet", ""),
                     "date": item.get("date", ""),
+                    "message_id": item.get("messageId") or item.get("message_id") or item.get("id", ""),
+                    "thread_id": item.get("threadId") or item.get("thread_id") or "",
                 }
                 for i, item in enumerate(items)
             ] if len(items) >= 2 else []
             return {"reply": reply, "route": "n8n", "action_type": None, "last_candidates": candidates or None}
     return {
         "reply": "Gmail 자동화를 실행하지 못했습니다. n8n Gmail credential 연결 상태를 확인하세요.",
+        "route": "n8n_fallback",
+        "action_type": None,
+    }
+
+
+def execute_gmail_detail(state: AssistantState) -> dict:
+    message, channel = state["message"], state.get("channel", "")
+    session_id, user_id = state.get("session_id", ""), state.get("user_id")
+    parsed = state.get("parsed_params")
+
+    if not settings.n8n_gmail_detail_webhook_path:
+        return {
+            "reply": "Gmail 상세 조회 workflow 경로가 설정되지 않았습니다. N8N_GMAIL_DETAIL_WEBHOOK_PATH를 확인하세요.",
+            "route": "n8n_fallback",
+            "action_type": None,
+        }
+
+    raw_body = run_n8n_automation_raw(
+        message,
+        channel,
+        session_id,
+        user_id,
+        settings.n8n_gmail_detail_webhook_path,
+        parsed,
+    )
+    if raw_body is not None:
+        reply = raw_body.get("reply") if isinstance(raw_body.get("reply"), str) else "메일 상세 정보를 조회했습니다."
+        return {"reply": reply, "route": "n8n", "action_type": None}
+    return {
+        "reply": "Gmail 상세 조회를 실행하지 못했습니다. n8n workflow 또는 Gmail credential 상태를 확인하세요.",
         "route": "n8n_fallback",
         "action_type": None,
     }

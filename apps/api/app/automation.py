@@ -46,6 +46,8 @@ CALENDAR_REFERENCE_PATTERN = re.compile(
 GMAIL_DRAFT_KEYWORDS = ("초안", "draft")
 GMAIL_SEND_KEYWORDS = ("발송", "send")
 GMAIL_SUMMARY_KEYWORDS = ("요약", "최근", "편지함", "받은편지함", "inbox")
+GMAIL_LIST_KEYWORDS = ("목록", "리스트", "더보기", "더 보여", "여러 건")
+GMAIL_DETAIL_KEYWORDS = ("상세", "자세히", "본문", "원문", "내용")
 GMAIL_REPLY_KEYWORDS = ("답장", "회신", "reply")
 GMAIL_THREAD_KEYWORDS = ("이어", "이어서", "계속", "thread", "스레드")
 MACOS_NOTE_KEYWORDS = ("메모", "노트", "notes")
@@ -65,6 +67,8 @@ TIME_FRAGMENT_PATTERN = re.compile(
 )
 THREAD_ID_PATTERN = re.compile(r"(?:thread|스레드)\s*(?:id)?\s*[:=]?\s*([A-Za-z0-9_-]+)", re.IGNORECASE)
 MESSAGE_ID_PATTERN = re.compile(r"(?:message|메시지|메일)\s*(?:id)?\s*[:=]?\s*([A-Za-z0-9_-]{10,})", re.IGNORECASE)
+LIST_LIMIT_PATTERN = re.compile(r"(?<!\d)(\d{1,2})\s*(?:건|개)")
+INDEX_SELECTION_PATTERN = re.compile(r"(\d+)\s*번")
 
 REFERENCE_MESSAGE_HINTS = (
     "그 일정",
@@ -333,6 +337,41 @@ def _build_gmail_search_query(message: str) -> str | None:
         parts.append(f'subject:"{subject_match.group(1)}"')
 
     return " ".join(parts) if parts else None
+
+
+def _extract_gmail_list_limit(message: str) -> int | None:
+    matched = LIST_LIMIT_PATTERN.search(message)
+    if not matched:
+        return None
+    value = int(matched.group(1))
+    if value < 1:
+        return None
+    return min(value, 30)
+
+
+def _extract_selected_indexes(message: str) -> list[int]:
+    indexes: list[int] = []
+    for match in INDEX_SELECTION_PATTERN.finditer(message):
+        value = int(match.group(1))
+        if value < 1:
+            continue
+        zero_based = value - 1
+        if zero_based not in indexes:
+            indexes.append(zero_based)
+    return indexes[:10]
+
+
+def _extract_group_by_date(message: str) -> bool | None:
+    lowered = message.lower()
+    if "날짜별" in message or "날짜 별" in message:
+        return True
+    if "일자별" in message or "일자 별" in message:
+        return True
+    if "날짜 구분" in message or "날짜로 구분" in message:
+        return True
+    if "그룹" in lowered and "날짜" in message:
+        return True
+    return None
 GMAIL_REPLY_BODY_SUFFIX_PATTERNS = (
     re.compile(r"\s*메일에\s*(?:이어서\s*)?답장해\s*줘\s*$"),
     re.compile(r"\s*메일에\s*회신해\s*줘\s*$"),
@@ -423,8 +462,40 @@ def _extract_rule_based_request(message: str, channel: str | None = None) -> Str
             )
     elif intent == "gmail_summary":
         search_query = _build_gmail_search_query(message)
-        if search_query:
-            mail_payload = MailExtractionPayload(searchQuery=search_query)
+        limit = _extract_gmail_list_limit(message)
+        group_by_date = _extract_group_by_date(message)
+        selected_indexes = _extract_selected_indexes(message)
+        if search_query or limit or group_by_date is not None or selected_indexes:
+            mail_payload = MailExtractionPayload(
+                searchQuery=search_query,
+                limit=limit,
+                groupByDate=group_by_date,
+                selectedIndexes=selected_indexes,
+            )
+    elif intent == "gmail_list":
+        search_query = _build_gmail_search_query(message)
+        limit = _extract_gmail_list_limit(message)
+        group_by_date = _extract_group_by_date(message)
+        selected_indexes = _extract_selected_indexes(message)
+        mail_payload = MailExtractionPayload(
+            searchQuery=search_query,
+            limit=limit,
+            groupByDate=group_by_date,
+            selectedIndexes=selected_indexes,
+        )
+    elif intent == "gmail_detail":
+        search_query = _build_gmail_search_query(message)
+        message_id_match = MESSAGE_ID_PATTERN.search(message)
+        thread_id_match = THREAD_ID_PATTERN.search(message)
+        detail_level = "full" if any(keyword in message for keyword in ("원문", "본문", "전체")) else "brief"
+        selected_indexes = _extract_selected_indexes(message)
+        mail_payload = MailExtractionPayload(
+            messageReference=message_id_match.group(1) if message_id_match else None,
+            threadReference=thread_id_match.group(1) if thread_id_match else None,
+            searchQuery=search_query,
+            detailLevel=detail_level,
+            selectedIndexes=selected_indexes,
+        )
 
     return StructuredExtraction(
         rawMessage=message,
@@ -517,6 +588,11 @@ def _merge_mail_payload(
         threadReference=_prefer_llm_text(llm_payload.thread_reference, baseline.thread_reference),
         messageReference=_prefer_llm_text(llm_payload.message_reference, baseline.message_reference),
         searchQuery=_prefer_llm_text(llm_payload.search_query, baseline.search_query),
+        limit=baseline.limit or llm_payload.limit,
+        cursor=_prefer_llm_text(llm_payload.cursor, baseline.cursor),
+        groupByDate=baseline.group_by_date if baseline.group_by_date is not None else llm_payload.group_by_date,
+        detailLevel=_prefer_llm_text(llm_payload.detail_level, baseline.detail_level),
+        selectedIndexes=baseline.selected_indexes or llm_payload.selected_indexes,
         attachmentUrls=baseline.attachment_urls or llm_payload.attachment_urls,
     )
 
@@ -628,7 +704,16 @@ def _apply_candidate_selection(
     elif extraction.domain == "mail" and extraction.mail:
         if not extraction.mail.subject:
             extraction.mail.subject = candidate_label
-        if not extraction.mail.search_query:
+        if extraction.intent == "gmail_detail":
+            message_id = (candidate_data or {}).get("message_id") or (candidate_data or {}).get("messageId")
+            thread_id = (candidate_data or {}).get("thread_id") or (candidate_data or {}).get("threadId")
+            if message_id:
+                extraction.mail.message_reference = message_id
+            if thread_id:
+                extraction.mail.thread_reference = thread_id
+            extraction.mail.selected_indexes = [index]
+            extraction.mail.detail_level = extraction.mail.detail_level or "brief"
+        elif not extraction.mail.search_query:
             extraction.mail.search_query = candidate_label
     elif extraction.domain == "note" and extraction.note:
         if not extraction.note.title:
@@ -798,6 +883,11 @@ def _apply_mail_reference_context(
         threadReference=current.thread_reference or previous.thread_reference,
         messageReference=current.message_reference or previous.message_reference,
         searchQuery=current.search_query or previous.search_query,
+        limit=current.limit or previous.limit,
+        cursor=current.cursor or previous.cursor,
+        groupByDate=current.group_by_date if current.group_by_date is not None else previous.group_by_date,
+        detailLevel=current.detail_level or previous.detail_level,
+        selectedIndexes=current.selected_indexes or previous.selected_indexes,
         attachmentUrls=current.attachment_urls or previous.attachment_urls,
     )
 
@@ -961,6 +1051,25 @@ def _mail_payload_to_compose_request(payload: MailExtractionPayload | None, inte
     return result
 
 
+def _mail_payload_to_detail_request(payload: MailExtractionPayload | None) -> dict[str, str] | None:
+    if payload is None:
+        return None
+    result: dict[str, str] = {
+        "detail_level": payload.detail_level or "brief",
+    }
+    if payload.message_reference:
+        result["message_id"] = payload.message_reference
+    if payload.thread_reference:
+        result["thread_id"] = payload.thread_reference
+    if payload.search_query:
+        result["search_query"] = payload.search_query
+    if payload.subject:
+        result["subject"] = payload.subject
+    if payload.sender:
+        result["sender"] = payload.sender
+    return result if any(key in result for key in ("message_id", "thread_id", "search_query", "subject")) else None
+
+
 def classify_message_intent(message: str) -> str:
     _ensure_skills()
     registry_result = classify_intent_from_registry(message)
@@ -989,6 +1098,10 @@ def classify_message_intent(message: str) -> str:
         return "gmail_thread_reply"
     if has_gmail_keyword and any(keyword in lowered for keyword in GMAIL_REPLY_KEYWORDS):
         return "gmail_reply"
+    if has_gmail_keyword and any(keyword in lowered for keyword in GMAIL_DETAIL_KEYWORDS):
+        return "gmail_detail"
+    if has_gmail_keyword and any(keyword in lowered for keyword in GMAIL_LIST_KEYWORDS):
+        return "gmail_list"
     if has_gmail_keyword and (
         any(keyword in lowered for keyword in GMAIL_SEND_KEYWORDS) or "보내" in message
     ) and not any(keyword in lowered for keyword in GMAIL_SUMMARY_KEYWORDS):
@@ -1204,12 +1317,49 @@ def _process_message_legacy(
             "action_type": intent,
         }
 
-    if intent == "gmail_summary" and settings.n8n_gmail_webhook_path:
-        reply = run_n8n_automation(message, channel, session_id, user_id, settings.n8n_gmail_webhook_path)
+    if intent in {"gmail_summary", "gmail_list"} and settings.n8n_gmail_webhook_path:
+        extra_payload: dict[str, str] | None = None
+        if extraction.mail:
+            extra = {}
+            if extraction.mail.search_query:
+                extra["searchQuery"] = extraction.mail.search_query
+            if extraction.mail.limit:
+                extra["limit"] = str(extraction.mail.limit)
+            if extraction.mail.cursor:
+                extra["cursor"] = extraction.mail.cursor
+            if extraction.mail.group_by_date is not None:
+                extra["groupByDate"] = "true" if extraction.mail.group_by_date else "false"
+            if extra:
+                extra_payload = extra
+        reply = run_n8n_automation(message, channel, session_id, user_id, settings.n8n_gmail_webhook_path, extra_payload)
         if reply is not None:
             return {"reply": reply, "route": "n8n", "action_type": None}
         return {
-            "reply": "Gmail 자동화를 실행하지 못했습니다. n8n Gmail credential 연결 상태를 확인하세요.",
+            "reply": "Gmail 목록 조회를 실행하지 못했습니다. n8n Gmail credential 연결 상태를 확인하세요.",
+            "route": "n8n_fallback",
+            "action_type": None,
+        }
+
+    if intent == "gmail_detail":
+        parsed = _mail_payload_to_detail_request(extraction.mail) if extraction.mail else parse_gmail_detail_request(message)
+        if parsed is None:
+            return {
+                "reply": "메일 상세 조회 대상을 찾지 못했습니다. 예: 1번 메일 상세 보여줘 또는 message id:xxxxx",
+                "route": "validation_error",
+                "action_type": intent,
+            }
+        raw_body = run_n8n_automation_raw(
+            message,
+            channel,
+            session_id,
+            user_id,
+            settings.n8n_gmail_detail_webhook_path,
+            parsed,
+        )
+        if raw_body is not None and isinstance(raw_body.get("reply"), str):
+            return {"reply": raw_body["reply"], "route": "n8n", "action_type": None}
+        return {
+            "reply": "Gmail 상세 조회를 실행하지 못했습니다. n8n Gmail detail workflow 또는 credential 연결 상태를 확인하세요.",
             "route": "n8n_fallback",
             "action_type": None,
         }
@@ -1608,6 +1758,39 @@ def parse_gmail_reply_request(message: str, intent: str) -> dict[str, str] | Non
     if not result.get("thread_id") and not result.get("message_id") and not result.get("search_query"):
         return None
 
+    return result
+
+
+def parse_gmail_detail_request(message: str) -> dict[str, str] | None:
+    subject = _extract_labeled_segment(
+        message,
+        labels=("제목", "subject"),
+        stop_labels=("메일", "상세", "자세히", "본문", "원문", "발신자", "보낸 사람", "sender", *GMAIL_COMPOSE_STOP_LABELS),
+    )
+    sender = _extract_labeled_segment(
+        message,
+        labels=("발신자", "보낸 사람", "sender"),
+        stop_labels=("제목", "subject", *GMAIL_COMPOSE_STOP_LABELS),
+    )
+    thread_id = _extract_pattern_value(THREAD_ID_PATTERN, message)
+    message_id = _extract_pattern_value(MESSAGE_ID_PATTERN, message)
+    search_query = _build_gmail_search_query(message)
+    detail_level = "full" if any(keyword in message for keyword in ("원문", "본문", "전체")) else "brief"
+
+    result = {"detail_level": detail_level}
+    if message_id:
+        result["message_id"] = message_id
+    if thread_id:
+        result["thread_id"] = thread_id
+    if subject:
+        result["subject"] = subject
+    if sender:
+        result["sender"] = sender
+    if search_query:
+        result["search_query"] = search_query
+
+    if not any(result.get(key) for key in ("message_id", "thread_id", "subject", "search_query")):
+        return None
     return result
 
 

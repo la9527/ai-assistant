@@ -9,13 +9,16 @@ from app.automation import extract_candidates_from_reply
 from app.automation import extract_structured_request
 from app.automation import extract_user_memory_candidates
 from app.automation import parse_ordinal_index
+from app.automation import classify_message_intent
 from app.llm import _build_local_reply_messages
 from app.automation import _mail_payload_to_compose_request
+from app.automation import _mail_payload_to_detail_request
 from app.automation import _mail_payload_to_reply_request
 from app.automation import _merge_mail_payload
 from app.automation import _normalize_gmail_reply_body
 from app.automation import parse_calendar_request
 from app.automation import parse_gmail_compose_request
+from app.automation import parse_gmail_detail_request
 from app.automation import parse_gmail_reply_request
 from app.schemas import CalendarExtractionPayload
 from app.schemas import MailExtractionPayload
@@ -398,6 +401,47 @@ class GmailSearchQueryTests(unittest.TestCase):
         query = _build_gmail_search_query("메일 보여줘")
 
         self.assertIsNone(query)
+
+
+class GmailListAndDetailExtractionTests(unittest.TestCase):
+    def test_classify_gmail_detail_intent(self) -> None:
+        intent = classify_message_intent("메일 첫번째 항목 본문 자세히 보여줘")
+        self.assertEqual(intent, "gmail_detail")
+
+    def test_classify_gmail_list_intent(self) -> None:
+        intent = classify_message_intent("메일 목록 더 보여줘")
+        self.assertEqual(intent, "gmail_list")
+
+    def test_gmail_list_extracts_limit_and_grouping(self) -> None:
+        extraction = extract_structured_request("오늘 메일 12건 날짜별로 목록 보여줘")
+
+        self.assertIn(extraction.intent, ("gmail_summary", "gmail_list"))
+        self.assertIsNotNone(extraction.mail)
+        self.assertEqual(extraction.mail.limit, 12)
+        self.assertTrue(extraction.mail.group_by_date)
+
+    def test_parse_gmail_detail_request_with_subject(self) -> None:
+        parsed = parse_gmail_detail_request("제목 주간 보고 메일 본문 상세 보여줘")
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["subject"], "주간 보고")
+        self.assertEqual(parsed["detail_level"], "full")
+
+    def test_mail_payload_to_detail_request_requires_target(self) -> None:
+        payload = MailExtractionPayload(detailLevel="brief")
+        self.assertIsNone(_mail_payload_to_detail_request(payload))
+
+    def test_mail_payload_to_detail_request_uses_message_reference(self) -> None:
+        payload = MailExtractionPayload(
+            messageReference="18f0abc123",
+            detailLevel="full",
+        )
+
+        parsed = _mail_payload_to_detail_request(payload)
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["message_id"], "18f0abc123")
+        self.assertEqual(parsed["detail_level"], "full")
 
 
 class SummaryExtractionIntegrationTests(unittest.TestCase):

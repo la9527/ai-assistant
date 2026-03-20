@@ -212,6 +212,11 @@ class MailExtractionPayload(BaseModel):
     thread_reference: str | None = Field(default=None, alias="threadReference")
     message_reference: str | None = Field(default=None, alias="messageReference")
     search_query: str | None = Field(default=None, alias="searchQuery")
+    limit: int | None = None
+    cursor: str | None = None
+    group_by_date: bool | None = Field(default=None, alias="groupByDate")
+    detail_level: str | None = Field(default=None, alias="detailLevel")
+    selected_indexes: list[int] = Field(default_factory=list, alias="selectedIndexes")
     attachment_urls: list[str] = Field(default_factory=list, alias="attachmentUrls")
 
 
