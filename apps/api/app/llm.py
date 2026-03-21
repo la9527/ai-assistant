@@ -425,8 +425,9 @@ def format_gmail_action_reply(reply: str, channel: str) -> str:
         text,
     )
     if reply_match:
+        mode = reply_match.group("mode")
         lines = [
-            f"{reply_match.group('mode')}을 실행했습니다.",
+            "thread 이어쓰기를 실행했습니다." if mode == "thread 이어쓰기" else f"{mode}을 실행했습니다.",
             f"대상: {reply_match.group('target').strip()}",
         ]
         if reply_match.group("attachment"):

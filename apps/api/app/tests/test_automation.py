@@ -916,6 +916,19 @@ class GmailActionReplyFormatTests(unittest.TestCase):
             "메일 회신을 실행했습니다.\n대상: AI Assistant Gmail 발송 테스트",
         )
 
+    def test_format_thread_reply_success_for_webui(self) -> None:
+        from app.llm import format_gmail_action_reply
+
+        result = format_gmail_action_reply(
+            "thread 이어쓰기을 실행했습니다. 대상은 'AI Assistant Gmail 발송 테스트' 입니다.",
+            "webui",
+        )
+
+        self.assertEqual(
+            result,
+            "thread 이어쓰기를 실행했습니다.\n대상: AI Assistant Gmail 발송 테스트",
+        )
+
     def test_format_reply_not_found_for_webui(self) -> None:
         from app.llm import format_gmail_action_reply
 
