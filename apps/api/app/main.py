@@ -908,7 +908,6 @@ def _record_user_message(
             session_id=session.id,
             last_intent=structured.intent,
             last_extraction=structured_payload,
-            last_candidates=[item.model_dump(by_alias=True, exclude_none=True) for item in structured.references] or [],
             state_data={"last_user_message": message},
         )
     else:
@@ -956,14 +955,20 @@ def _record_assistant_message(
     if workflow_state_data:
         state_data.update(workflow_state_data)
 
+    state_kwargs: dict[str, object] = {
+        "last_route": route,
+        "pending_action": action_type if route == "approval_required" else None,
+        "pending_ticket_id": approval_ticket_id if route == "approval_required" else None,
+        "state_data": state_data,
+    }
+    # 새 후보가 없을 때는 이전 후보를 유지해 후속 번호 선택 대화를 지원한다.
+    if reply_candidates:
+        state_kwargs["last_candidates"] = reply_candidates
+
     upsert_session_state(
         db,
         session_id=session_id,
-        last_route=route,
-        pending_action=action_type if route == "approval_required" else None,
-        pending_ticket_id=approval_ticket_id if route == "approval_required" else None,
-        last_candidates=reply_candidates or None,
-        state_data=state_data,
+        **state_kwargs,
     )
 
 

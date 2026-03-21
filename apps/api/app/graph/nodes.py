@@ -5,6 +5,7 @@ from __future__ import annotations
 from app.automation import (
     ACTION_LABELS,
     _calendar_payload_to_request,
+    build_gmail_detail_target_guidance,
     _mail_payload_to_compose_request,
     _mail_payload_to_detail_request,
     _mail_payload_to_reply_request,
@@ -152,7 +153,7 @@ def validate(state: AssistantState) -> dict:
         if parsed is None:
             return {
                 "parsed_params": None,
-                "reply": "메일 상세 조회 대상을 찾지 못했습니다.\n같은 대화에서 먼저 메일 목록을 보여준 뒤 '1번 메일 상세 보여줘'처럼 요청하거나 'message id:xxxxx' 형식으로 직접 지정해 주세요.",
+                "reply": build_gmail_detail_target_guidance(extraction),
                 "route": "validation_error",
                 "action_type": intent,
             }

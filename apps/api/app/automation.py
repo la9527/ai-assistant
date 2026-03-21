@@ -652,6 +652,25 @@ def apply_reference_context(
         candidate_label = candidate.get("label", candidate.get("raw", ""))
         extraction = _apply_candidate_selection(extraction, candidate_label, ordinal_idx, previous_extraction, candidate_data=candidate)
 
+    # gmail_detail 후속 질문에서 번호가 없더라도 문맥 힌트를 제공한다.
+    if extraction.intent == "gmail_detail" and ordinal_idx is None and last_candidates:
+        if len(last_candidates) == 1:
+            candidate = last_candidates[0]
+            candidate_label = candidate.get("label", candidate.get("raw", ""))
+            extraction = _apply_candidate_selection(extraction, candidate_label, 0, previous_extraction, candidate_data=candidate)
+        else:
+            candidate_hints: list[dict[str, object]] = []
+            for idx, candidate in enumerate(last_candidates[:5]):
+                label = candidate.get("label") or candidate.get("raw") or f"{idx + 1}번 메일"
+                sender = candidate.get("sender") or ""
+                preview = f"{sender} - {label}" if sender and sender not in label else str(label)
+                candidate_hints.append({"index": idx, "label": preview})
+            extraction.metadata = {
+                **dict(extraction.metadata),
+                "gmail_detail_candidate_hints": candidate_hints,
+                "gmail_detail_candidate_total": len(last_candidates),
+            }
+
     if previous_extraction is None:
         return extraction
 
@@ -715,6 +734,18 @@ def _apply_candidate_selection(
             extraction.mail.detail_level = extraction.mail.detail_level or "brief"
         elif not extraction.mail.search_query:
             extraction.mail.search_query = candidate_label
+    elif extraction.domain == "mail" and extraction.intent == "gmail_detail":
+        # 메일 payload가 비어 있어도 후보 기반 상세 조회가 가능하도록 초기화한다.
+        extraction.mail = MailExtractionPayload()
+        message_id = (candidate_data or {}).get("message_id") or (candidate_data or {}).get("messageId")
+        thread_id = (candidate_data or {}).get("thread_id") or (candidate_data or {}).get("threadId")
+        if message_id:
+            extraction.mail.message_reference = message_id
+        if thread_id:
+            extraction.mail.thread_reference = thread_id
+        extraction.mail.subject = candidate_label
+        extraction.mail.selected_indexes = [index]
+        extraction.mail.detail_level = "brief"
     elif extraction.domain == "note" and extraction.note:
         if not extraction.note.title:
             extraction.note.title = candidate_label
@@ -1070,6 +1101,36 @@ def _mail_payload_to_detail_request(payload: MailExtractionPayload | None) -> di
     return result if any(key in result for key in ("message_id", "thread_id", "search_query", "subject")) else None
 
 
+def build_gmail_detail_target_guidance(extraction: StructuredExtraction | None = None) -> str:
+    default_reply = (
+        "메일 상세 조회 대상을 찾지 못했습니다.\n"
+        "같은 대화에서 먼저 메일 목록을 보여준 뒤 '1번 메일 상세 보여줘'처럼 요청하거나 "
+        "'message id:xxxxx' 형식으로 직접 지정해 주세요."
+    )
+    if extraction is None:
+        return default_reply
+
+    metadata = dict(extraction.metadata)
+    hints = metadata.get("gmail_detail_candidate_hints")
+    if not isinstance(hints, list) or not hints:
+        return default_reply
+
+    lines = [
+        "메일 상세 조회 대상을 찾지 못했습니다.",
+        "직전 목록에서 아래 번호 중 하나를 지정해 주세요:",
+    ]
+    for hint in hints:
+        if not isinstance(hint, dict):
+            continue
+        idx = hint.get("index")
+        label = hint.get("label")
+        if isinstance(idx, int) and isinstance(label, str) and label.strip():
+            lines.append(f"{idx + 1}번. {label}")
+    lines.append("예: '2번 메일 상세 보여줘'")
+    lines.append("또는 'message id:xxxxx' 형식으로 직접 지정해 주세요.")
+    return "\n".join(lines)
+
+
 def classify_message_intent(message: str) -> str:
     _ensure_skills()
     registry_result = classify_intent_from_registry(message)
@@ -1344,7 +1405,7 @@ def _process_message_legacy(
         parsed = _mail_payload_to_detail_request(extraction.mail) if extraction.mail else parse_gmail_detail_request(message)
         if parsed is None:
             return {
-                "reply": "메일 상세 조회 대상을 찾지 못했습니다.\n같은 대화에서 먼저 메일 목록을 보여준 뒤 '1번 메일 상세 보여줘'처럼 요청하거나 'message id:xxxxx' 형식으로 직접 지정해 주세요.",
+                "reply": build_gmail_detail_target_guidance(extraction),
                 "route": "validation_error",
                 "action_type": intent,
             }

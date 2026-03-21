@@ -3,6 +3,7 @@ import unittest
 
 from app.automation import _calendar_payload_to_request
 from app.automation import _build_gmail_search_query
+from app.automation import build_gmail_detail_target_guidance
 from app.automation import _parse_summary_time_range
 from app.automation import apply_reference_context
 from app.automation import extract_candidates_from_reply
@@ -361,6 +362,70 @@ class CandidateSelectionReferenceTests(unittest.TestCase):
 
         self.assertEqual(result.domain, "calendar")
         self.assertEqual(result.action, "read")
+
+    def test_gmail_detail_single_candidate_auto_selected(self) -> None:
+        extraction = StructuredExtraction(
+            raw_message="메일 자세히 보여줘",
+            normalizedMessage="메일 자세히 보여줘",
+            domain="mail",
+            action="read",
+            intent="gmail_detail",
+            confidence=0.8,
+        )
+        previous = StructuredExtraction(
+            raw_message="최근 메일 보여줘",
+            normalizedMessage="최근 메일 보여줘",
+            domain="mail",
+            action="read",
+            intent="gmail_list",
+            confidence=0.8,
+        )
+        candidates = [
+            {
+                "index": 0,
+                "label": "보안 알림",
+                "raw": "Google - 보안 알림",
+                "sender": '"Google" <no-reply@accounts.google.com>',
+                "message_id": "18f0abc123",
+                "thread_id": "thread-001",
+            }
+        ]
+
+        result = apply_reference_context(extraction, previous, last_candidates=candidates)
+
+        self.assertTrue(result.metadata.get("candidate_selected"))
+        self.assertIsNotNone(result.mail)
+        self.assertEqual(result.mail.message_reference, "18f0abc123")
+        self.assertEqual(result.mail.thread_reference, "thread-001")
+
+    def test_gmail_detail_multiple_candidates_adds_guidance_hints(self) -> None:
+        extraction = StructuredExtraction(
+            raw_message="메일 자세히 보여줘",
+            normalizedMessage="메일 자세히 보여줘",
+            domain="mail",
+            action="read",
+            intent="gmail_detail",
+            confidence=0.8,
+        )
+        previous = StructuredExtraction(
+            raw_message="최근 메일 보여줘",
+            normalizedMessage="최근 메일 보여줘",
+            domain="mail",
+            action="read",
+            intent="gmail_list",
+            confidence=0.8,
+        )
+        candidates = [
+            {"index": 0, "label": "보안 알림", "sender": "Google"},
+            {"index": 1, "label": "Gemini 결제 설정 안내", "sender": "Google AI Studio"},
+        ]
+
+        result = apply_reference_context(extraction, previous, last_candidates=candidates)
+        reply = build_gmail_detail_target_guidance(result)
+
+        self.assertIn("1번.", reply)
+        self.assertIn("2번.", reply)
+        self.assertIn("직전 목록", reply)
 
 
 class SummaryTimeRangeTests(unittest.TestCase):
