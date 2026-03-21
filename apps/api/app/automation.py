@@ -6,6 +6,7 @@ from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from app.config import settings
+from app.llm import format_gmail_action_reply
 from app.llm import format_gmail_detail
 from app.llm import format_gmail_summary
 from app.llm import generate_structured_extraction
@@ -1322,6 +1323,7 @@ def _process_message_legacy(
             action_label = ACTION_LABELS[intent]
             return {
                 "reply": f"일정 {action_label} 요청입니다. 승인 후 실행합니다.",
+                "reply": f"일정 {action_label} 요청입니다.\n승인 후 실행합니다.",
                 "route": "approval_required",
                 "action_type": intent,
             }
@@ -1347,7 +1349,7 @@ def _process_message_legacy(
         if not approval_granted:
             action_label = ACTION_LABELS[intent]
             return {
-                "reply": f"메일 {action_label} 요청입니다. 승인 후 실행합니다.",
+                "reply": f"메일 {action_label} 요청입니다.\n승인 후 실행합니다.",
                 "route": "approval_required",
                 "action_type": intent,
             }
@@ -1358,7 +1360,7 @@ def _process_message_legacy(
         )
         reply = run_n8n_automation(message, channel, session_id, user_id, webhook_path, parsed)
         if reply is not None:
-            return {"reply": reply, "route": "n8n", "action_type": intent}
+            return {"reply": format_gmail_action_reply(reply, channel), "route": "n8n", "action_type": intent}
         fallback_reply = "승인된 메일 작업 실행에 실패했습니다. n8n Gmail workflow 또는 credential 연결 상태를 확인하세요."
         return {"reply": fallback_reply, "route": "n8n_fallback", "action_type": intent}
 
@@ -1373,7 +1375,7 @@ def _process_message_legacy(
         if not approval_granted:
             action_label = ACTION_LABELS[intent]
             return {
-                "reply": f"메일 {action_label} 요청입니다. 승인 후 실행합니다.",
+                "reply": f"메일 {action_label} 요청입니다.\n승인 후 실행합니다.",
                 "route": "approval_required",
                 "action_type": intent,
             }
@@ -1386,7 +1388,7 @@ def _process_message_legacy(
             parsed,
         )
         if reply is not None:
-            return {"reply": reply, "route": "n8n", "action_type": intent}
+            return {"reply": format_gmail_action_reply(reply, channel), "route": "n8n", "action_type": intent}
         return {
             "reply": "승인된 메일 회신 실행에 실패했습니다. n8n Gmail reply workflow 또는 credential 연결 상태를 확인하세요.",
             "route": "n8n_fallback",

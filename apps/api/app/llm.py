@@ -387,6 +387,66 @@ def _format_gmail_detail_compact(detail: dict[str, str], reply: str) -> str:
     return "\n".join(lines)
 
 
+def format_gmail_action_reply(reply: str, channel: str) -> str:
+    text = str(reply or "").strip()
+    if not text or channel not in ("webui", "web", "api"):
+        return text
+
+    send_match = re.match(
+        r"^(?P<recipient>.+?)로 메일을 발송했습니다\.\s*제목은 '(?P<subject>.+?)' 입니다\.(?P<attachment>\s*첨부파일 URL도 포함했습니다\.)?$",
+        text,
+    )
+    if send_match:
+        lines = [
+            "메일을 발송했습니다.",
+            f"수신: {send_match.group('recipient').strip()}",
+            f"제목: {send_match.group('subject').strip()}",
+        ]
+        if send_match.group("attachment"):
+            lines.append("첨부파일 URL도 포함했습니다.")
+        return "\n".join(lines)
+
+    draft_match = re.match(
+        r"^(?P<recipient>.+?) 수신 메일 초안을 작성했습니다\.\s*제목은 '(?P<subject>.+?)' 입니다\.(?P<attachment>\s*첨부파일 URL도 포함했습니다\.)?$",
+        text,
+    )
+    if draft_match:
+        lines = [
+            "메일 초안을 작성했습니다.",
+            f"수신: {draft_match.group('recipient').strip()}",
+            f"제목: {draft_match.group('subject').strip()}",
+        ]
+        if draft_match.group("attachment"):
+            lines.append("첨부파일 URL도 포함했습니다.")
+        return "\n".join(lines)
+
+    reply_match = re.match(
+        r"^(?P<mode>thread 이어쓰기|메일 회신)을 실행했습니다\.\s*대상은 '(?P<target>.+?)' 입니다\.(?P<attachment>\s*첨부파일 URL도 포함했습니다\.)?$",
+        text,
+    )
+    if reply_match:
+        lines = [
+            f"{reply_match.group('mode')}을 실행했습니다.",
+            f"대상: {reply_match.group('target').strip()}",
+        ]
+        if reply_match.group("attachment"):
+            lines.append("첨부파일 URL도 포함했습니다.")
+        return "\n".join(lines)
+
+    not_found_match = re.match(
+        r"^(?P<target>.+?)에 대한 회신 대상을 찾지 못했습니다\.\s*제목이나 thread id를 더 구체적으로 알려주세요\.$",
+        text,
+    )
+    if not_found_match:
+        return "\n".join([
+            "회신 대상을 찾지 못했습니다.",
+            f"대상: {not_found_match.group('target').strip()}",
+            "제목이나 thread id를 더 구체적으로 알려주세요.",
+        ])
+
+    return text
+
+
 def format_gmail_summary_with_llm(
     items: list[dict],
     channel: str,

@@ -25,7 +25,7 @@ from app.automation import (
 )
 from app.config import settings
 from app.graph.state import AssistantState
-from app.llm import format_gmail_detail, format_gmail_summary, generate_external_reply, generate_local_reply
+from app.llm import format_gmail_action_reply, format_gmail_detail, format_gmail_summary, generate_external_reply, generate_local_reply
 
 
 def _build_mail_result_context(raw_body: dict, items: list[dict], *, mode: str, selected_item: dict | None = None) -> dict:
@@ -227,7 +227,7 @@ def check_approval(state: AssistantState) -> dict:
         "macos_darkmode": "macOS 테마",
     }
     prefix = domain_label.get(intent.rsplit("_", 1)[0], "")
-    reply_text = f"{prefix} {action_label} 요청입니다. 승인 후 실행합니다." if prefix else f"{action_label} 요청입니다. 승인 후 실행합니다."
+    reply_text = f"{prefix} {action_label} 요청입니다.\n승인 후 실행합니다." if prefix else f"{action_label} 요청입니다.\n승인 후 실행합니다."
     if intent == "macos_note_create":
         reply_text = "macOS 메모 생성 요청입니다. 승인 후 AppleScript로 실행합니다."
     return {
@@ -281,7 +281,7 @@ def execute_calendar_write(state: AssistantState) -> dict:
     }[intent]
     reply = run_n8n_automation(message, channel, session_id, user_id, webhook_path, parsed)
     if reply is not None:
-        return {"reply": reply, "route": "n8n", "action_type": intent}
+        return {"reply": format_gmail_action_reply(reply, channel), "route": "n8n", "action_type": intent}
     return {
         "reply": "승인된 일정 작업 실행에 실패했습니다. n8n workflow 또는 자격 증명을 확인하세요.",
         "route": "n8n_fallback",
@@ -318,7 +318,7 @@ def execute_gmail_reply(state: AssistantState) -> dict:
 
     reply = run_n8n_automation(message, channel, session_id, user_id, settings.n8n_gmail_reply_webhook_path, parsed)
     if reply is not None:
-        return {"reply": reply, "route": "n8n", "action_type": intent}
+        return {"reply": format_gmail_action_reply(reply, channel), "route": "n8n", "action_type": intent}
     return {
         "reply": "승인된 메일 회신 실행에 실패했습니다. n8n Gmail reply workflow 또는 credential 연결 상태를 확인하세요.",
         "route": "n8n_fallback",

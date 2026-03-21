@@ -36,6 +36,7 @@ from app.db import Base
 from app.db import engine
 from app.db import get_db
 from app.db import SessionLocal
+from app.llm import format_gmail_action_reply
 from app.llm import warm_local_llm
 from app.models import ApprovalTicket
 from app.models import AssistantSession
@@ -1017,7 +1018,7 @@ def _process_kakao_message(
             status="pending_approval",
         )
         approval_ticket_id = ticket.id
-        reply = f"{result['reply']} ticket={ticket.id}"
+        reply = f"{result['reply']}\n티켓: {ticket.id}"
     else:
         create_task_run(db, session_id=session.id, task_type=str(result["route"]), detail=utterance)
         reply = str(result["reply"])
@@ -1403,7 +1404,7 @@ def _chat_impl(payload: ChatRequest, db: Session, *, provider_hint: str | None =
             status="pending_approval",
         )
         approval_ticket_id = ticket.id
-        reply = f"{result['reply']} ticket={ticket.id}"
+        reply = f"{result['reply']}\n티켓: {ticket.id}"
     else:
         create_task_run(db, session_id=session.id, task_type=str(result["route"]), detail=payload.message)
         reply = str(result["reply"])
@@ -2171,7 +2172,10 @@ def _execute_pending_ticket(ticket: ApprovalTicket, db: Session) -> tuple[str | 
         memory_context=_load_user_memory_context(db, session.user_id),
     )
     update_task_run_status(db, pending_task, status="completed", detail=pending_task.detail)
-    return str(result["reply"]), str(result["route"])
+    reply = str(result["reply"])
+    if ticket.action_type in {"gmail_draft", "gmail_send", "gmail_reply", "gmail_thread_reply"}:
+        reply = format_gmail_action_reply(reply, session.channel)
+    return reply, str(result["route"])
 
 
 def _resolve_slack_session(
@@ -2228,7 +2232,7 @@ def _process_slack_message(
             status="pending_approval",
         )
         approval_ticket_id = ticket.id
-        reply = f"{result['reply']} ticket={ticket.id}"
+        reply = f"{result['reply']}\n티켓: {ticket.id}"
     else:
         create_task_run(db, session_id=session.id, task_type=str(result["route"]), detail=message)
         reply = str(result["reply"])

@@ -863,6 +863,47 @@ class GmailDetailFormatTests(unittest.TestCase):
         self.assertIn("Please complete your billing setup.", result)
 
 
+class GmailActionReplyFormatTests(unittest.TestCase):
+    def test_format_send_reply_for_webui(self) -> None:
+        from app.llm import format_gmail_action_reply
+
+        result = format_gmail_action_reply(
+            "la9527@daum.net로 메일을 발송했습니다. 제목은 'AI Assistant 메일 발송 테스트' 입니다.",
+            "webui",
+        )
+
+        self.assertEqual(
+            result,
+            "메일을 발송했습니다.\n수신: la9527@daum.net\n제목: AI Assistant 메일 발송 테스트",
+        )
+
+    def test_format_reply_success_for_webui(self) -> None:
+        from app.llm import format_gmail_action_reply
+
+        result = format_gmail_action_reply(
+            "메일 회신을 실행했습니다. 대상은 'AI Assistant Gmail 발송 테스트' 입니다.",
+            "webui",
+        )
+
+        self.assertEqual(
+            result,
+            "메일 회신을 실행했습니다.\n대상: AI Assistant Gmail 발송 테스트",
+        )
+
+    def test_format_reply_not_found_for_webui(self) -> None:
+        from app.llm import format_gmail_action_reply
+
+        result = format_gmail_action_reply(
+            "AI Assistant Gmail 발송 테스트에 대한 회신 대상을 찾지 못했습니다. 제목이나 thread id를 더 구체적으로 알려주세요.",
+            "webui",
+        )
+
+        self.assertEqual(
+            result,
+            "회신 대상을 찾지 못했습니다.\n대상: AI Assistant Gmail 발송 테스트\n제목이나 thread id를 더 구체적으로 알려주세요.",
+        )
+
+
 class RunN8nAutomationRawTests(unittest.TestCase):
     """run_n8n_automation_raw 반환 형식 검증."""
 
