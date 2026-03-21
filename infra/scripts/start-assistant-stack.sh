@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+ROOT_DIR="${AI_ASSISTANT_ROOT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
 COMPOSE_FILE="$ROOT_DIR/infra/docker/docker-compose.yml"
 ENV_FILE="$ROOT_DIR/.env"
 AI_STORAGE_ROOT="${AI_STORAGE_ROOT:-/Volumes/ExtData/ai-assistant}"

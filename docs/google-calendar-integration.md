@@ -87,7 +87,7 @@ https://www.googleapis.com/auth/calendar.readonly
 
 ## 현재 저장소 기준 workflow 연결 방식
 
-현재 샘플 workflow 파일은 [workflows/n8n/assistant-automation.json](/Users/byoungyoungla/AI_Project/AI_Assistant/workflows/n8n/assistant-automation.json) 이다.
+현재 샘플 workflow 파일은 [workflows/n8n/assistant-automation.json](../workflows/n8n/assistant-automation.json) 이다.
 
 현재 상태:
 

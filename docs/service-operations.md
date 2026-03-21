@@ -61,9 +61,12 @@ infra/scripts/migrate-extdata-storage.sh
 이 스크립트는 아래 작업을 수행한다.
 
 - `~/Library/LaunchAgents` 에 plist 복사
+- 현재 저장소 절대 경로와 사용자 홈 경로로 plist 내부 값을 재작성
 - 기존 동일 label이 있으면 `bootout`
 - `bootstrap` 으로 재등록
 - `kickstart` 로 즉시 시작
+
+저장소 디렉토리를 이동한 경우에는 위 설치 스크립트를 다시 실행해 launchd 등록값을 갱신한다.
 
 설치 후 확인 명령:
 
@@ -85,6 +88,7 @@ sudo infra/scripts/install-launchd-daemons.sh
 - `com.aiassistant.mlx-base-server.daemon`
 - `com.aiassistant.mlx-webui-proxy.daemon`
 - 두 daemon plist를 `/Library/LaunchDaemons` 에 복사
+- 현재 저장소 절대 경로, 실행 사용자, 홈 경로로 plist 내부 값을 재작성
 - 기존 사용자 LaunchAgent 기반 MLX job을 disable + bootout 처리해 자동 로그인 이후에도 중복 실행 방지
 - system domain에 bootstrap 후 즉시 kickstart
 

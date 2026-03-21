@@ -8,6 +8,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/zsh</string>
+        <string>-lc</string>
         <string>/Users/byoungyoungla/AI_Project/AI_Assistant/infra/scripts/start-mlx-base-server.sh</string>
     </array>
 
