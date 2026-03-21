@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from app.automation import _execute_registered_skill
 from app.automation import extract_structured_request
+from app.schemas import BrowserExtractionPayload
 from app.skills.registry import ensure_initialized
 from app.skills.registry import get_skill_runtime
 
@@ -128,6 +129,53 @@ class SkillRuntimeTest(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["route"], "browser")
         self.assertIn("브라우저 검색을 완료했습니다.", result["reply"])
+
+    def test_registered_browser_screenshot_uses_full_page_payload(self) -> None:
+        extraction = extract_structured_request("https://example.com 화면 캡처해줘", "test")
+        extraction = extraction.model_copy(
+            update={"browser": BrowserExtractionPayload(url="https://example.com", fullPage=True)}
+        )
+        with patch("app.skills.browser.implementation.httpx.Client") as mocked_client:
+            mocked_post = mocked_client.return_value.__enter__.return_value.post
+            mocked_response = mocked_post.return_value
+            mocked_response.raise_for_status.return_value = None
+            mocked_response.json.return_value = {"imageBase64": "abc"}
+            result = _execute_registered_skill(
+                extraction=extraction,
+                message=extraction.raw_message,
+                channel="web",
+                session_id="session-1",
+                user_id="user-1",
+                approval_granted=True,
+                memory_context=None,
+                intent_override=None,
+            )
+        self.assertIsNotNone(result)
+        self.assertEqual(result["route"], "browser")
+        self.assertEqual(mocked_post.call_args.kwargs["json"]["fullPage"], True)
+
+    def test_registered_note_skill_uses_extracted_note_payload(self) -> None:
+        extraction = extract_structured_request(
+            "메모에 제목 주간 점검 내용 브라우저 러너 상태 확인 저장해줘",
+            "test",
+        )
+        with patch("app.automation.parse_macos_note_request", side_effect=AssertionError("parser should not run")):
+            with patch("app.automation.run_macos_automation", return_value="메모 저장 완료") as mocked_run:
+                result = _execute_registered_skill(
+                    extraction=extraction,
+                    message=extraction.raw_message,
+                    channel="web",
+                    session_id="session-1",
+                    user_id="user-1",
+                    approval_granted=True,
+                    memory_context=None,
+                    intent_override=None,
+                )
+        self.assertIsNotNone(result)
+        self.assertEqual(result["route"], "macos")
+        self.assertEqual(result["reply"], "메모 저장 완료")
+        self.assertEqual(mocked_run.call_args.args[5]["title"], "주간 점검")
+        self.assertEqual(mocked_run.call_args.args[5]["body"], extraction.note.body)
 
 
 if __name__ == "__main__":

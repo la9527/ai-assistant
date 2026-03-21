@@ -15,15 +15,28 @@ class MacOSNoteCreateSkill(BaseSkill):
     async def extract(self, message: str, context: dict) -> BaseModel | None:
         return context.get("structured_extraction")
 
+    def _build_note_payload(self, params: BaseModel) -> dict[str, str] | None:
+        note = getattr(params, "note", None)
+        if note and note.title and note.body:
+            payload = {
+                "title": note.title,
+                "body": note.body,
+            }
+            if note.folder:
+                payload["folder"] = note.folder
+            return payload
+        return None
+
     async def validate(self, params: BaseModel) -> list[str]:
         from app import automation as automation_module
 
-        return [] if automation_module.parse_macos_note_request(params.raw_message) else ["title", "body"]
+        parsed = self._build_note_payload(params) or automation_module.parse_macos_note_request(params.raw_message)
+        return [] if parsed else ["title", "body"]
 
     async def execute(self, params: BaseModel, context: dict) -> dict:
         from app import automation as automation_module
 
-        parsed = automation_module.parse_macos_note_request(context["message"])
+        parsed = self._build_note_payload(params) or automation_module.parse_macos_note_request(context["message"])
         reply = automation_module.run_macos_automation(
             context["message"], context["channel"], context["session_id"], context.get("user_id"), "macos/notes", parsed
         )

@@ -86,11 +86,12 @@ class BrowserScreenshotSkill(_BaseBrowserSkill):
     async def execute(self, params: BaseModel, context: dict) -> dict:
         browser = getattr(params, "browser", None)
         url = browser.url if browser and browser.url else _extract_url(context["message"])
+        full_page = browser.full_page if browser and browser.full_page is not None else False
         try:
             with httpx.Client(timeout=30.0) as client:
                 response = client.post(
                     f"{settings.browser_runner_base_url.rstrip('/')}/browse/screenshot",
-                    json={"url": url, "timeoutMs": 15000, "fullPage": False},
+                    json={"url": url, "timeoutMs": 15000, "fullPage": full_page},
                 )
                 response.raise_for_status()
             data = response.json()
