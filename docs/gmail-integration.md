@@ -215,6 +215,8 @@
 
 주의: 브라우저에서 `localhost:5678` 로 열고 redirect URI를 `127.0.0.1:5678` 로 등록하는 식으로 host를 섞으면 OAuth callback 이후 `Unauthorized` 가 발생할 수 있다. 접속 주소와 redirect URI를 둘 다 `127.0.0.1` 기준으로 유지한다.
 
+주의: n8n에서 Gmail credential을 삭제 후 다시 만들면 credential 이름이 같아도 내부 ID는 바뀐다. 이 경우 저장소의 Gmail workflow JSON 과 live n8n workflow 가 예전 credential ID를 계속 참조할 수 있으므로, workflow를 다시 import 하고 publish 해야 실제 실행 경로가 새 credential을 사용한다.
+
 ## 다음 권장 작업
 
 - 현재 workflow는 최근 메일 5건 제목과 발신자 요약, 메일 초안 작성, 실제 발송, 메일 회신, thread 이어쓰기까지 구현되어 있다.

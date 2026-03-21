@@ -931,7 +931,7 @@ def _try_local_structured_extraction(
             }
             return extraction
         except Exception as exc:
-            logger.info(
+            logger.debug(
                 "Structured extraction parse retry intent=%s model=%s response_format=%s error=%s",
                 intent,
                 settings.local_llm.structured_extraction_model,

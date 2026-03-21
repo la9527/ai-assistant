@@ -49,6 +49,8 @@
 - Docker 영속 데이터 기본 루트: `/Volumes/ExtData/ai-assistant/docker`
 - MLX/Hugging Face 캐시 기본 루트: `/Volumes/ExtData/ai-assistant/mlx`
 - 현재 기준 마이그레이션 스크립트: [infra/scripts/migrate-extdata-storage.sh](infra/scripts/migrate-extdata-storage.sh)
+- n8n 저장소 초기화 및 workflow 재적용 스크립트: [infra/scripts/reset-n8n-extdata-storage.sh](infra/scripts/reset-n8n-extdata-storage.sh)
+- 현재 운영 기준 n8n 메타데이터 DB는 SQLite bind mount 대신 PostgreSQL을 사용하고, `.n8n` 디렉터리는 설정, 로그, custom nodes, 파일성 상태만 `/Volumes/ExtData/ai-assistant/docker/n8n` 아래에 둔다.
 - stack 시작 스크립트는 위 경로가 없으면 자동으로 생성한다.
 
 ## 단계별 구현 계획
@@ -206,6 +208,7 @@ Kakao 채널을 추가한다.
 - 현재 운영 launchd 는 `com.aiassistant.mlx-base-server`, `com.aiassistant.mlx-webui-proxy`, `com.aiassistant.stack` 를 사용하며, 설치와 수동 운영 절차는 [docs/service-operations.md](docs/service-operations.md) 와 [docs/mlx-operations.md](docs/mlx-operations.md) 에 정리했다.
 - Guacamole remote desktop 는 `infra/scripts/start-remote-desktop.sh`, `infra/scripts/stop-remote-desktop.sh`, `infra/scripts/status-remote-desktop.sh` 기준으로 운영한다. 이 스크립트들은 현재 셸에 export 된 `GUACAMOLE_*` 값이 `.env` 설정을 덮어쓰지 않도록 먼저 정리한다.
 - 2026-03-22 재검증에서는 일정 생성 승인 후 `route=n8n_fallback` 이 반환됐고, 원인은 API runtime 이 아니라 `assistant-calendar-create` webhook 이 `200 OK` 와 빈 body 를 반환하는 운영 문제로 확인됐다.
+- 이후 ExtData 저장소 전환 이후에는 같은 webhook 이 `SQLITE_NOTADB` 또는 `SQLITE_IOERR` 로도 실패할 수 있음을 확인했고, reset 이후에도 재발해 현재 운영 기준은 n8n DB를 PostgreSQL로 전환하는 것이다.
 
 ## 현재 보류 사항
 

@@ -58,7 +58,7 @@
       "alwaysOutputData": true,
       "credentials": {
         "googleCalendarOAuth2Api": {
-          "id": "ICwN7bJllVyejRa7",
+          "id": "3jKPkt9wIQWU1feF",
           "name": "Google Calendar account"
         }
       }
@@ -150,7 +150,7 @@
       "position": [1340, 220],
       "credentials": {
         "googleCalendarOAuth2Api": {
-          "id": "ICwN7bJllVyejRa7",
+          "id": "3jKPkt9wIQWU1feF",
           "name": "Google Calendar account"
         }
       }

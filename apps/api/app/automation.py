@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import httpx
 import logging
 import re
@@ -1569,7 +1570,8 @@ def _run_skill_coro(coro):
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
-    raise RuntimeError("running event loop prevents synchronous skill execution")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(asyncio.run, coro).result()
 
 
 def _build_skill_approval_reply(skill_id: str, skill_name: str) -> str:

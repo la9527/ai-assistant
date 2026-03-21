@@ -27,11 +27,14 @@ Docker Compose core stack에는 기본적으로 아래 서비스가 포함된다
 
 대용량 영속 데이터는 기본적으로 `/Volumes/ExtData/ai-assistant` 아래 bind mount 로 저장한다. 현재 기준으로 Open WebUI, n8n, PostgreSQL, Redis, Caddy, Guacamole 데이터와 MLX/Hugging Face 캐시를 이 경로 아래로 모은다.
 
+현재 운영 기준 n8n의 메타데이터 DB는 PostgreSQL을 사용한다. `/Volumes/ExtData/ai-assistant/docker/n8n` 는 n8n 설정 파일, event log, custom nodes, storage 디렉터리 같은 파일성 상태를 저장하고, 실제 workflow/credential/execution 메타데이터 DB는 `/Volumes/ExtData/ai-assistant/docker/postgres` 아래 PostgreSQL 데이터 안에 들어간다.
+
 ## 관련 파일
 
 - launchd 설치 스크립트: [infra/scripts/install-launchd-services.sh](infra/scripts/install-launchd-services.sh)
 - core stack 시작 스크립트: [infra/scripts/start-assistant-stack.sh](infra/scripts/start-assistant-stack.sh)
 - core stack 중지 스크립트: [infra/scripts/stop-assistant-stack.sh](infra/scripts/stop-assistant-stack.sh)
+- n8n ExtData 저장소 초기화 스크립트: [infra/scripts/reset-n8n-extdata-storage.sh](infra/scripts/reset-n8n-extdata-storage.sh)
 - 상태 확인 스크립트: [infra/scripts/status-assistant-services.sh](infra/scripts/status-assistant-services.sh)
 - remote desktop 시작 스크립트: [infra/scripts/start-remote-desktop.sh](infra/scripts/start-remote-desktop.sh)
 - remote desktop 중지 스크립트: [infra/scripts/stop-remote-desktop.sh](infra/scripts/stop-remote-desktop.sh)
@@ -56,6 +59,18 @@ infra/scripts/install-launchd-services.sh
 
 ```bash
 infra/scripts/migrate-extdata-storage.sh
+```
+
+n8n이 과거 SQLite bind mount 구성에서 `/Volumes/ExtData/ai-assistant/docker/n8n` 아래 `SQLITE_NOTADB`, `SQLITE_IOERR`, `Error while saving insights metadata and raw data` 형태로 깨졌다면 아래 스크립트로 파일성 상태를 백업 후 재초기화할 수 있다.
+
+```bash
+infra/scripts/reset-n8n-extdata-storage.sh
+```
+
+legacy SQLite 복구 시 owner 계정을 다시 만든 뒤 workflow 만 다시 넣고 싶다면 아래처럼 실행한다.
+
+```bash
+infra/scripts/reset-n8n-extdata-storage.sh --import-only
 ```
 
 이 스크립트는 아래 작업을 수행한다.
@@ -236,13 +251,17 @@ curl -sS http://127.0.0.1/assistant/api/health
 - 이후 n8n event log 와 SQLite execution 기록을 확인한 결과, live `assistant-calendar-create` workflow 는 실제로 실행되지만 `Create Calendar Event` 노드에서 `Google Calendar account` OAuth credential 의 authorization grant 또는 refresh token 이 invalid/expired/revoked 상태라 실패했다.
 - 저장소의 `assistant-calendar-create`, `assistant-calendar-update`, `assistant-calendar-delete` workflow JSON 은 먼저 `continueErrorOutput` 브랜치 기준으로, 이후 `continueOnFail + If` 기준으로도 보강해 live n8n SQLite 에 반영했다.
 - 하지만 현재 live `n8nio/n8n:2.12.3` + `Google Calendar` node 조합에서는 credential 만료 오류 시에도 direct webhook body 가 계속 비어 있으므로, API fallback 응답에서 `Google Calendar account` credential 재연결 안내를 명시적으로 반환하도록 서버 쪽도 보강했다.
+- 같은 날 후속 점검에서는 credential 문제와 별개로 ExtData 기반 n8n 저장소가 `Error while saving insights metadata and raw data`, `SQLITE_NOTADB`, `SQLITE_IOERR` 를 일으켜 direct webhook 자체가 500으로 무너지는 상태도 확인됐다.
+- 이 경우 compose 설정 경로는 이미 `/Volumes/ExtData/ai-assistant/docker/n8n` 으로 맞았지만, SQLite reset 뒤에도 첫 write webhook 에서 `SQLITE_IOERR` 가 재발했다.
+- 그래서 현재 기준 근본 복구 절차는 n8n 메타데이터 DB를 PostgreSQL로 전환하고, ExtData의 `.n8n` 디렉터리는 파일성 상태만 유지하는 것이다.
 
 운영 해석:
 
 - FastAPI runtime skill 경로와 프록시 경로는 정상이다.
-- 현재 우선 점검 대상은 `Google Calendar account` credential 을 n8n UI 에서 재연결하는 것이다.
+- 현재 우선 복구 대상은 ExtData 기반 n8n SQLite 의존을 제거하고 PostgreSQL 기반으로 재기동하는 것이다.
+- 저장소 재초기화 후에는 `Google Calendar account` 와 Gmail credential 을 n8n UI 에서 다시 연결해야 한다.
 - 저장소 workflow 수정만으로는 live SQLite workflow 에 자동 반영되지 않으므로, import 또는 수동 편집 후 다시 활성화해야 한다.
-- 현 시점 사용자 영향 기준 최종 동작은 다음과 같다: approval API는 정상이며, calendar 승인 실행 실패 시 generic 문구 대신 credential 재연결 안내를 반환한다.
+- 현 시점 사용자 영향 기준 최종 동작은 다음과 같다: approval API는 정상이며, n8n DB가 PostgreSQL로 올라오기 전까지는 calendar 승인 실행이 direct webhook 500 또는 fallback 안내로 끝날 수 있다.
 
 ## 로그 경로
 

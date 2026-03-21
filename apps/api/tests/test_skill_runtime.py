@@ -1,7 +1,9 @@
+import asyncio
 import unittest
 from unittest.mock import patch
 
 from app.automation import _execute_registered_skill
+from app.automation import _run_skill_coro
 from app.automation import extract_structured_request
 from app.schemas import BrowserExtractionPayload
 from app.skills.registry import ensure_initialized
@@ -176,6 +178,15 @@ class SkillRuntimeTest(unittest.TestCase):
         self.assertEqual(result["reply"], "메모 저장 완료")
         self.assertEqual(mocked_run.call_args.args[5]["title"], "주간 점검")
         self.assertEqual(mocked_run.call_args.args[5]["body"], extraction.note.body)
+
+    def test_run_skill_coro_inside_running_event_loop(self) -> None:
+        async def sample() -> str:
+            return "ok"
+
+        async def invoke() -> str:
+            return _run_skill_coro(sample())
+
+        self.assertEqual(asyncio.run(invoke()), "ok")
 
 
 if __name__ == "__main__":
