@@ -144,6 +144,12 @@ class ClassifyIntentFromRegistryTests(unittest.TestCase):
         result = classify_intent_from_registry("gmail 초안 작성해줘")
         self.assertEqual(result, "gmail_draft")
 
+    def test_ambiguous_mail_action_returns_none(self) -> None:
+        result = classify_intent_from_registry(
+            "보낸 사람 la9527@daum.net 제목 AI Assistant Gmail 발송 테스트 내용 확인했습니다 메일에 답장해줘"
+        )
+        self.assertIsNone(result)
+
     def test_note_create_intent(self) -> None:
         result = classify_intent_from_registry("메모 작성해줘")
         self.assertEqual(result, "macos_note_create")

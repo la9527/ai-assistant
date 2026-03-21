@@ -3,6 +3,7 @@ import unittest
 
 from app.automation import _calendar_payload_to_request
 from app.automation import _build_gmail_search_query
+from app.automation import _build_gmail_reply_search_query
 from app.automation import build_gmail_detail_target_guidance
 from app.automation import _parse_summary_time_range
 from app.automation import apply_reference_context
@@ -51,6 +52,19 @@ class GmailReplyNormalizationTests(unittest.TestCase):
             parsed["search_query"],
             'subject:"AI Assistant Gmail 발송 테스트" newer_than:30d',
         )
+
+    def test_build_gmail_reply_search_query_prefers_subject_over_sender(self) -> None:
+        query = _build_gmail_reply_search_query(
+            "AI Assistant Gmail 발송 테스트",
+            "la9527@daum.net",
+        )
+
+        self.assertEqual(query, 'subject:"AI Assistant Gmail 발송 테스트" newer_than:30d')
+
+    def test_build_gmail_reply_search_query_uses_sender_when_subject_missing(self) -> None:
+        query = _build_gmail_reply_search_query(None, "la9527@daum.net")
+
+        self.assertEqual(query, "from:la9527@daum.net newer_than:30d")
 
     def test_mail_payload_to_reply_request_uses_clean_body(self) -> None:
         payload = MailExtractionPayload(
@@ -472,6 +486,18 @@ class GmailListAndDetailExtractionTests(unittest.TestCase):
     def test_classify_gmail_detail_intent(self) -> None:
         intent = classify_message_intent("메일 첫번째 항목 본문 자세히 보여줘")
         self.assertEqual(intent, "gmail_detail")
+
+    def test_classify_gmail_send_with_subject_body_labels(self) -> None:
+        intent = classify_message_intent(
+            "la9527@daum.net로 제목 AI Assistant Gmail 발송 테스트 내용 추가 답장 테스트입니다 메일 보내줘"
+        )
+        self.assertEqual(intent, "gmail_send")
+
+    def test_classify_gmail_reply_even_when_subject_contains_send_keyword(self) -> None:
+        intent = classify_message_intent(
+            "보낸 사람 la9527@daum.net 제목 AI Assistant Gmail 발송 테스트 내용 확인했습니다 메일에 답장해줘"
+        )
+        self.assertEqual(intent, "gmail_reply")
 
     def test_classify_gmail_list_intent(self) -> None:
         intent = classify_message_intent("메일 목록 더 보여줘")

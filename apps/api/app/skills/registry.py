@@ -72,6 +72,16 @@ def classify_intent_from_registry(message: str) -> str | None:
     if not candidates:
         return None
 
+    if len(candidates) > 1:
+        top_skill, top_score = candidates[0]
+        next_skill, next_score = candidates[1]
+        if (
+            top_skill.domain == "mail"
+            and next_skill.domain == "mail"
+            and top_score - next_score < 0.25
+        ):
+            return None
+
     # 최고 점수 후보가 유일하거나 확실하면 바로 반환
     top_skill, top_score = candidates[0]
     if top_score > 0 and (len(candidates) == 1 or top_score > candidates[1][1]):

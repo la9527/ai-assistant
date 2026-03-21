@@ -52,6 +52,28 @@ GMAIL_SUMMARY_KEYWORDS = ("요약", "최근", "편지함", "받은편지함", "i
 GMAIL_LIST_KEYWORDS = ("목록", "리스트", "더보기", "더 보여", "여러 건")
 GMAIL_DETAIL_KEYWORDS = ("상세", "자세히", "본문", "원문", "내용")
 GMAIL_REPLY_KEYWORDS = ("답장", "회신", "reply")
+GMAIL_REPLY_REQUEST_HINTS = (
+    "답장해",
+    "답장 해",
+    "답장줘",
+    "답장 줘",
+    "답장해줘",
+    "답장해 줘",
+    "답장 보내",
+    "답장 작성",
+    "메일에 답장",
+    "이메일에 답장",
+    "메일 답장",
+    "회신해",
+    "회신 해",
+    "회신줘",
+    "회신 줘",
+    "회신해줘",
+    "회신해 줘",
+    "회신 보내",
+    "회신 작성",
+    "reply",
+)
 GMAIL_THREAD_KEYWORDS = ("이어", "이어서", "계속", "thread", "스레드")
 MACOS_NOTE_KEYWORDS = ("메모", "노트", "notes")
 MACOS_NOTE_CREATE_KEYWORDS = ("추가", "작성", "저장", "기록", "남겨", "만들")
@@ -1157,6 +1179,12 @@ def classify_message_intent(message: str) -> str:
     has_calendar_reference = CALENDAR_REFERENCE_PATTERN.search(message) is not None or TIME_FRAGMENT_PATTERN.search(message) is not None
     has_calendar_context = has_calendar_keyword or has_calendar_reference
     has_gmail_keyword = any(keyword in lowered for keyword in GMAIL_AUTOMATION_KEYWORDS) or EMAIL_ADDRESS_PATTERN.search(message) is not None
+    has_explicit_send_request = (
+        has_gmail_keyword
+        and (any(keyword in lowered for keyword in GMAIL_SEND_KEYWORDS) or "보내" in message)
+        and not any(keyword in lowered for keyword in GMAIL_SUMMARY_KEYWORDS)
+        and parse_gmail_compose_request(message, "gmail_send") is not None
+    )
 
     if any(keyword in message for keyword in CALENDAR_UPDATE_KEYWORDS) and has_calendar_context:
         return "calendar_update"
@@ -1169,12 +1197,14 @@ def classify_message_intent(message: str) -> str:
 
     if has_gmail_keyword and any(keyword in lowered for keyword in GMAIL_DRAFT_KEYWORDS):
         return "gmail_draft"
-    if has_gmail_keyword and any(keyword in lowered for keyword in GMAIL_THREAD_KEYWORDS) and any(
-        keyword in lowered for keyword in GMAIL_REPLY_KEYWORDS
-    ):
+    has_explicit_reply_request = any(keyword in lowered for keyword in GMAIL_REPLY_REQUEST_HINTS)
+
+    if has_gmail_keyword and any(keyword in lowered for keyword in GMAIL_THREAD_KEYWORDS) and has_explicit_reply_request:
         return "gmail_thread_reply"
-    if has_gmail_keyword and any(keyword in lowered for keyword in GMAIL_REPLY_KEYWORDS):
+    if has_gmail_keyword and has_explicit_reply_request:
         return "gmail_reply"
+    if has_explicit_send_request:
+        return "gmail_send"
     if has_gmail_keyword and any(keyword in lowered for keyword in GMAIL_DETAIL_KEYWORDS):
         return "gmail_detail"
     if has_gmail_keyword and any(keyword in lowered for keyword in GMAIL_LIST_KEYWORDS):
@@ -2173,19 +2203,14 @@ def _extract_pattern_value(pattern: re.Pattern[str], message: str) -> str | None
 
 
 def _build_gmail_reply_search_query(subject: str | None, sender: str | None) -> str | None:
-    query_parts: list[str] = []
     if subject:
-        query_parts.append(f'subject:"{subject}"')
+        return f'subject:"{subject}" newer_than:30d'
     if sender:
         sender_email = EMAIL_ADDRESS_PATTERN.search(sender)
         if sender_email:
-            query_parts.append(f'from:{sender_email.group(0)}')
-        else:
-            query_parts.append(f'from:"{sender}"')
-    query_parts.append("newer_than:30d")
-    if len(query_parts) == 1 and query_parts[0] == "newer_than:30d":
-        return None
-    return " ".join(query_parts)
+            return f'from:{sender_email.group(0)} newer_than:30d'
+        return f'from:"{sender}" newer_than:30d'
+    return None
 
 
 def _extract_attachment_url(message: str) -> str | None:
