@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Sequence
 
+from app.skills.base import BaseSkill
 from app.skills.base import SkillDescriptor
 
 
@@ -13,11 +14,24 @@ from app.skills.base import SkillDescriptor
 # ---------------------------------------------------------------------------
 
 _SKILL_REGISTRY: list[SkillDescriptor] = []
+_SKILL_RUNTIME_REGISTRY: dict[str, BaseSkill] = {}
 
 
 def register_skill(descriptor: SkillDescriptor) -> None:
     """스킬을 레지스트리에 추가한다."""
+    existing = get_skill_by_id(descriptor.skill_id)
+    if existing is not None:
+        index = _SKILL_REGISTRY.index(existing)
+        _SKILL_REGISTRY[index] = descriptor
+        return
     _SKILL_REGISTRY.append(descriptor)
+
+
+def register_skill_runtime(skill: BaseSkill) -> None:
+    """실행 가능한 스킬 구현체를 등록한다."""
+    descriptor = skill.descriptor()
+    register_skill(descriptor)
+    _SKILL_RUNTIME_REGISTRY[descriptor.skill_id] = skill
 
 
 def get_registry() -> list[SkillDescriptor]:
@@ -31,6 +45,20 @@ def get_skill_by_id(skill_id: str) -> SkillDescriptor | None:
         if skill.skill_id == skill_id:
             return skill
     return None
+
+
+def get_skill_runtime(skill_id: str) -> BaseSkill | None:
+    """skill_id로 실행 가능한 스킬 구현체를 찾는다."""
+    return _SKILL_RUNTIME_REGISTRY.get(skill_id)
+
+
+def get_enabled_skills(domain: str | None = None) -> list[SkillDescriptor]:
+    """활성화된 스킬 목록을 반환한다."""
+    return [
+        skill
+        for skill in _SKILL_REGISTRY
+        if skill.enabled and (domain is None or skill.domain == domain)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -99,14 +127,29 @@ def _auto_discover() -> None:
     """도메인별 스킬 모듈에서 SKILLS 리스트를 가져와 등록한다."""
     # 순환 임포트 방지를 위해 함수 내부에서 임포트
     from app.skills.calendar.descriptor import SKILLS as calendar_skills
+    from app.skills.calendar.implementation import SKILL_IMPLEMENTATIONS as calendar_skill_implementations
+    from app.skills.browser.implementation import SKILL_IMPLEMENTATIONS as browser_skill_implementations
     from app.skills.mail.descriptor import SKILLS as mail_skills
+    from app.skills.mail.implementation import SKILL_IMPLEMENTATIONS as mail_skill_implementations
+    from app.skills.macos.implementation import SKILL_IMPLEMENTATIONS as macos_skill_implementations
     from app.skills.note.descriptor import SKILLS as note_skills
+    from app.skills.note.implementation import SKILL_IMPLEMENTATIONS as note_skill_implementations
     from app.skills.macos.descriptor import SKILLS as macos_skills
     from app.skills.search.descriptor import SKILLS as search_skills
+    from app.skills.search.implementation import SKILL_IMPLEMENTATIONS as search_skill_implementations
     from app.skills.browser.descriptor import SKILLS as browser_skills
 
     for skill in (*calendar_skills, *mail_skills, *note_skills, *macos_skills, *search_skills, *browser_skills):
         register_skill(skill)
+    for skill in (
+        *calendar_skill_implementations,
+        *mail_skill_implementations,
+        *browser_skill_implementations,
+        *macos_skill_implementations,
+        *note_skill_implementations,
+        *search_skill_implementations,
+    ):
+        register_skill_runtime(skill)
 
 
 def ensure_initialized() -> None:

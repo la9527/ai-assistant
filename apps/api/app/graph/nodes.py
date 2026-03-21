@@ -3,29 +3,16 @@
 from __future__ import annotations
 
 from app.automation import (
-    ACTION_LABELS,
-    _calendar_payload_to_request,
-    build_gmail_detail_target_guidance,
-    _mail_payload_to_compose_request,
-    _mail_payload_to_detail_request,
-    _mail_payload_to_reply_request,
+    _build_skill_approval_reply,
+    _build_skill_validation_error,
+    _execute_registered_skill_runtime,
+    _validate_registered_skill,
     extract_structured_request,
-    parse_calendar_request,
-    parse_gmail_compose_request,
-    parse_gmail_detail_request,
-    parse_gmail_reply_request,
-    parse_macos_finder_open_request,
-    parse_macos_note_request,
-    parse_macos_reminder_request,
-    parse_macos_volume_set_request,
-    run_macos_automation,
-    run_macos_get,
-    run_n8n_automation,
-    run_n8n_automation_raw,
 )
 from app.config import settings
 from app.graph.state import AssistantState
 from app.llm import format_gmail_action_reply, format_gmail_detail, format_gmail_summary, generate_external_reply, generate_local_reply
+from app.skills.registry import get_skill_runtime
 
 
 def _build_mail_result_context(raw_body: dict, items: list[dict], *, mode: str, selected_item: dict | None = None) -> dict:
@@ -63,6 +50,18 @@ def _generate_reply_with_external_fallback(
     return generate_local_reply(message, channel, memory_context)
 
 
+def _build_calendar_n8n_failure_reply(intent: str) -> str:
+    action_label = {
+        "calendar_create": "생성",
+        "calendar_update": "변경",
+        "calendar_delete": "삭제",
+    }.get(intent, "처리")
+    return (
+        f"Google Calendar 연결이 만료되었거나 n8n workflow 응답이 비정상이라 일정 {action_label}을 완료하지 못했습니다. "
+        "n8n의 Google Calendar account credential을 다시 연결한 뒤 다시 시도해 주세요."
+    )
+
+
 # ---------------------------------------------------------------------------
 # 1. classify — 의도 분류 + 구조화 추출
 # ---------------------------------------------------------------------------
@@ -89,121 +88,15 @@ def classify(state: AssistantState) -> dict:
 def validate(state: AssistantState) -> dict:
     intent = state["intent"]
     extraction = state.get("extraction")
-    message = state["message"]
-
-    if intent in {"calendar_create", "calendar_update", "calendar_delete"}:
-        parsed = (
-            _calendar_payload_to_request(extraction.calendar, intent)
-            if extraction and extraction.calendar
-            else parse_calendar_request(message, intent)
-        )
-        if parsed is None:
-            example = (
-                "내일 오후 3시에 치과 일정 추가해줘"
-                if intent == "calendar_create"
-                else "내일 오후 4시 치과 일정 변경해줘"
-                if intent == "calendar_update"
-                else "오늘 06:00-07:00 피자 시키기 일정 삭제해줘"
-            )
-            guidance = "삭제할 일정의 제목이나 시간을 더 구체적으로 알려주세요. " if intent == "calendar_delete" else ""
+    if extraction is not None:
+        missing_fields = _validate_registered_skill(extraction, intent)
+        if missing_fields is not None and missing_fields:
             return {
                 "parsed_params": None,
-                "reply": f"일정 요청을 이해하지 못했습니다. {guidance}예: {example}",
+                "reply": _build_skill_validation_error(intent, extraction),
                 "route": "validation_error",
                 "action_type": intent,
             }
-        return {"parsed_params": parsed}
-
-    if intent in {"gmail_draft", "gmail_send"}:
-        parsed = (
-            _mail_payload_to_compose_request(extraction.mail, intent)
-            if extraction and extraction.mail
-            else parse_gmail_compose_request(message, intent)
-        )
-        if parsed is None:
-            return {
-                "parsed_params": None,
-                "reply": "메일 작성 요청을 이해하지 못했습니다. 예: test@example.com로 제목 주간 보고, 내용 오늘 작업 완료 메일 초안 작성해줘",
-                "route": "validation_error",
-                "action_type": intent,
-            }
-        return {"parsed_params": parsed}
-
-    if intent in {"gmail_reply", "gmail_thread_reply"}:
-        parsed = (
-            _mail_payload_to_reply_request(extraction.mail, intent)
-            if extraction and extraction.mail
-            else parse_gmail_reply_request(message, intent)
-        )
-        if parsed is None:
-            return {
-                "parsed_params": None,
-                "reply": "메일 회신 요청을 이해하지 못했습니다. 예: 제목 AI Assistant Gmail 발송 테스트 내용 확인했습니다 메일에 답장해줘",
-                "route": "validation_error",
-                "action_type": intent,
-            }
-        return {"parsed_params": parsed}
-
-    if intent == "gmail_detail":
-        parsed = (
-            _mail_payload_to_detail_request(extraction.mail)
-            if extraction and extraction.mail
-            else parse_gmail_detail_request(message)
-        )
-        if parsed is None:
-            return {
-                "parsed_params": None,
-                "reply": build_gmail_detail_target_guidance(extraction),
-                "route": "validation_error",
-                "action_type": intent,
-            }
-        return {"parsed_params": parsed}
-
-    if intent == "macos_note_create":
-        parsed = parse_macos_note_request(message)
-        if parsed is None:
-            return {
-                "parsed_params": None,
-                "reply": "macOS 메모 요청을 이해하지 못했습니다. 예: 메모에 제목 주간 점검 내용 브라우저 러너와 Slack 상태 확인 저장해줘",
-                "route": "validation_error",
-                "action_type": intent,
-            }
-        return {"parsed_params": parsed}
-
-    if intent == "macos_reminder_create":
-        parsed = parse_macos_reminder_request(message)
-        if parsed is None:
-            return {
-                "parsed_params": None,
-                "reply": "미리알림 요청을 이해하지 못했습니다. 예: 미리알림에 장보기 추가해줘",
-                "route": "validation_error",
-                "action_type": intent,
-            }
-        return {"parsed_params": parsed}
-
-    if intent == "macos_volume_set":
-        parsed = parse_macos_volume_set_request(message)
-        if parsed is None:
-            return {
-                "parsed_params": None,
-                "reply": "볼륨 값을 이해하지 못했습니다. 예: 볼륨 50으로 설정해줘",
-                "route": "validation_error",
-                "action_type": intent,
-            }
-        return {"parsed_params": parsed}
-
-    if intent == "macos_finder_open":
-        parsed = parse_macos_finder_open_request(message)
-        if parsed is None:
-            return {
-                "parsed_params": None,
-                "reply": "Finder에서 열 경로를 이해하지 못했습니다. 예: ~/Documents 폴더 열어줘",
-                "route": "validation_error",
-                "action_type": intent,
-            }
-        return {"parsed_params": parsed}
-
-    # calendar_summary, gmail_summary, chat, macos_volume_get, macos_darkmode_toggle — 파라미터 불필요
     return {"parsed_params": None}
 
 
@@ -213,27 +106,39 @@ def validate(state: AssistantState) -> dict:
 
 def check_approval(state: AssistantState) -> dict:
     intent = state["intent"]
-    if intent not in ACTION_LABELS:
+    runtime = get_skill_runtime(intent)
+    if runtime is None or not runtime.descriptor().approval_required:
         return {}
     if state.get("approval_granted"):
         return {}
-    action_label = ACTION_LABELS[intent]
-    domain_label = {
-        "calendar": "일정",
-        "gmail": "메일",
-        "macos_note": "macOS 메모",
-        "macos_reminder": "macOS 미리알림",
-        "macos_volume": "macOS 볼륨",
-        "macos_darkmode": "macOS 테마",
-    }
-    prefix = domain_label.get(intent.rsplit("_", 1)[0], "")
-    reply_text = f"{prefix} {action_label} 요청입니다.\n승인 후 실행합니다." if prefix else f"{action_label} 요청입니다.\n승인 후 실행합니다."
-    if intent == "macos_note_create":
-        reply_text = "macOS 메모 생성 요청입니다. 승인 후 AppleScript로 실행합니다."
     return {
-        "reply": reply_text,
+        "reply": _build_skill_approval_reply(intent, runtime.descriptor().name),
         "route": "approval_required",
         "action_type": intent,
+    }
+
+
+def execute_skill(state: AssistantState) -> dict:
+    extraction = state.get("extraction")
+    if extraction is None:
+        return {
+            "reply": "실행할 스킬 정보를 찾지 못했습니다.",
+            "route": "validation_error",
+            "action_type": state.get("intent"),
+        }
+    result = _execute_registered_skill_runtime(
+        extraction=extraction,
+        message=state["message"],
+        channel=state.get("channel", ""),
+        session_id=state.get("session_id", ""),
+        user_id=state.get("user_id"),
+        memory_context=state.get("memory_context"),
+        skill_id=state.get("intent"),
+    )
+    return result or {
+        "reply": "실행 가능한 스킬을 찾지 못했습니다.",
+        "route": "validation_error",
+        "action_type": state.get("intent"),
     }
 
 
@@ -283,7 +188,7 @@ def execute_calendar_write(state: AssistantState) -> dict:
     if reply is not None:
         return {"reply": format_gmail_action_reply(reply, channel), "route": "n8n", "action_type": intent}
     return {
-        "reply": "승인된 일정 작업 실행에 실패했습니다. n8n workflow 또는 자격 증명을 확인하세요.",
+        "reply": _build_calendar_n8n_failure_reply(intent),
         "route": "n8n_fallback",
         "action_type": intent,
     }

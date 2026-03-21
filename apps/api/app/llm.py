@@ -5,7 +5,11 @@ import re
 import httpx
 
 from app.config import ExternalLLMSettings, settings
+from app.schemas import BrowserExtractionPayload
+from app.schemas import MacOSExtractionPayload
 from app.schemas import StructuredExtraction
+from app.skills.registry import ensure_initialized as _ensure_skills
+from app.skills.registry import get_enabled_skills
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -34,27 +38,59 @@ def _structured_prompt_examples(intent: str) -> str:
         "gmail_send": (
             '{"version":"1","rawMessage":"test@example.com로 제목 주간 보고 내용 오늘 작업 완료 메일 보내줘","normalizedMessage":"test@example.com로 제목 주간 보고 내용 오늘 작업 완료 메일 보내줘","channel":"web","domain":"mail","action":"send","intent":"gmail_send","confidence":0.9,"needsClarification":false,"approvalRequired":true,"missingFields":[],"references":[],"calendar":null,"mail":{"recipients":["test@example.com"],"cc":[],"bcc":[],"subject":"주간 보고","body":"오늘 작업 완료","threadReference":null,"messageReference":null,"searchQuery":null,"attachmentUrls":[]},"note":null,"metadata":{}}'
         ),
+        "browser_read": (
+            '{"version":"1","rawMessage":"https://example.com 읽어줘","normalizedMessage":"https://example.com 읽어줘","channel":"web","domain":"browser","action":"read","intent":"browser_read","skillId":"browser_read","confidence":0.9,"needsClarification":false,"approvalRequired":false,"missingFields":[],"references":[],"calendar":null,"mail":null,"browser":{"url":"https://example.com"},"macos":null,"note":null,"metadata":{}}'
+        ),
+        "macos_reminder_create": (
+            '{"version":"1","rawMessage":"미리알림에 장보기 추가해줘","normalizedMessage":"미리알림에 장보기 추가해줘","channel":"web","domain":"macos","action":"reminder_create","intent":"macos_reminder_create","skillId":"macos_reminder_create","confidence":0.9,"needsClarification":false,"approvalRequired":true,"missingFields":[],"references":[],"calendar":null,"mail":null,"browser":null,"macos":{"reminderName":"장보기","reminderNote":"","reminderList":"Reminders"},"note":null,"metadata":{}}'
+        ),
     }
     return examples.get(intent, "")
 
 
-def _build_structured_extraction_prompt(intent: str) -> str:
+def _format_skill_catalog_for_prompt(domain: str | None, intent: str) -> str:
+    _ensure_skills()
+    skills = get_enabled_skills(domain)
+    if not skills:
+        return ""
+
+    lines: list[str] = []
+    for skill in skills:
+        examples = ", ".join(skill.intent_examples[:2]) if skill.intent_examples else ""
+        hints = ", ".join(skill.disambiguation_hints[:2]) if skill.disambiguation_hints else ""
+        line = f"- {skill.skill_id}: {skill.description}"
+        if examples:
+            line += f" | examples={examples}"
+        if hints:
+            line += f" | hints={hints}"
+        if skill.skill_id == intent:
+            line += " | baseline_skill=true"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _build_structured_extraction_prompt(intent: str, domain: str | None = None) -> str:
     example = _structured_prompt_examples(intent)
+    skill_catalog = _format_skill_catalog_for_prompt(domain, intent)
     prompt = (
         "당신은 한국어 AI 비서의 구조화 추출기다. 반드시 JSON 객체 하나만 출력하고 그 외 설명, 마크다운, 코드펜스, 주석을 절대 추가하지 마라. "
         "baseline_extraction을 우선 보정하는 역할만 수행한다. baseline이 이미 맞으면 같은 의미를 유지한 JSON만 반환하라. "
-        "최상위 필드는 version, rawMessage, normalizedMessage, channel, domain, action, intent, confidence, needsClarification, approvalRequired, missingFields, references, calendar, mail, note, metadata 만 사용한다. "
-        "없는 값은 null 을 사용하라. 빈 문자열 \"\", 빈 배열 [] 를 calendar, mail, note 자리에 넣지 마라. "
-        "calendar, mail, note 는 객체 또는 null 만 허용된다. references 는 배열만 허용된다. metadata 는 객체만 허용된다. "
+        "최상위 필드는 version, rawMessage, normalizedMessage, channel, domain, action, intent, skillId, confidence, needsClarification, approvalRequired, missingFields, references, calendar, mail, browser, macos, note, metadata 만 사용한다. "
+        "없는 값은 null 을 사용하라. 빈 문자열 \"\", 빈 배열 [] 를 calendar, mail, browser, macos, note 자리에 넣지 마라. "
+        "calendar, mail, browser, macos, note 는 객체 또는 null 만 허용된다. references 는 배열만 허용된다. metadata 는 객체만 허용된다. "
         "normalizedMessage는 원문 의미를 유지한 정규화 문자열로 작성하고, 오타로 바꾸지 마라. "
         "calendar_create는 title, startAt, endAt 이 중요하다. calendar_update는 기존 일정 검색용 searchTitle/searchTimeMin/searchTimeMax 와 새 시간 startAt/endAt 을 함께 채운다. "
         "calendar_delete는 searchTitle, searchTimeMin, searchTimeMax 를 채운다. "
         "calendar_summary는 조회 범위인 searchTimeMin/searchTimeMax 가 중요하다. '오늘 일정'이면 오늘 0시~내일 0시, '이번 주'면 월요일~일요일, '내일'이면 내일 0시~모레 0시를 ISO 형식으로 채운다. searchTitle이 언급되면 함께 채운다. "
         "gmail_summary는 searchQuery 가 중요하다. '오늘 메일'이면 newer_than:1d, '이번 주'면 newer_than:7d, '최근 메일'이면 newer_than:3d 를 넣는다. 발신자, 제목이 언급되면 from:, subject: 를 추가한다. "
         "gmail_reply는 body와 searchQuery 또는 threadReference/messageReference 중 하나가 중요하다. "
+        "browser_read, browser_screenshot 는 url 이 중요하고, browser_search 는 query 가 중요하다. "
+        "macos_reminder_create 는 remidnerName 대신 reminderName 필드를 사용하고, macos_volume_set 은 volumeLevel, macos_finder_open 은 finderPath 를 사용한다. "
         "답장 본문 body에는 '메일에 답장해줘' 같은 작업 지시문을 넣지 말고 실제 답장 내용만 남겨라. "
         "정보가 부족하면 needsClarification=true 와 missingFields를 채워라. 위험 작업은 approvalRequired=true 를 유지하라."
     )
+    if skill_catalog:
+        prompt += f" 활성 skill catalog:\n{skill_catalog}"
     if example:
         prompt += f" 예시: {example}"
     return prompt
@@ -101,6 +137,26 @@ def _sanitize_note_payload(payload: object) -> object:
     return sanitized
 
 
+def _sanitize_browser_payload(payload: object) -> object:
+    if not isinstance(payload, dict):
+        return _nullify_blank(payload)
+    sanitized = dict(payload)
+    for key in ("url", "query"):
+        if key in sanitized and sanitized[key] == "":
+            sanitized[key] = None
+    return sanitized
+
+
+def _sanitize_macos_payload(payload: object) -> object:
+    if not isinstance(payload, dict):
+        return _nullify_blank(payload)
+    sanitized = dict(payload)
+    for key in ("reminderName", "reminderNote", "reminderList", "finderPath", "toggleTarget"):
+        if key in sanitized and sanitized[key] == "":
+            sanitized[key] = None
+    return sanitized
+
+
 def _sanitize_structured_extraction_payload(
     payload: dict[str, object],
     baseline: dict[str, object],
@@ -114,10 +170,13 @@ def _sanitize_structured_extraction_payload(
     sanitized["domain"] = sanitized.get("domain") or baseline.get("domain")
     sanitized["action"] = sanitized.get("action") or baseline.get("action")
     sanitized["intent"] = sanitized.get("intent") or baseline.get("intent")
+    sanitized["skillId"] = sanitized.get("skillId") or baseline.get("skillId") or sanitized.get("intent")
     sanitized["references"] = sanitized.get("references") if isinstance(sanitized.get("references"), list) else []
     sanitized["metadata"] = sanitized.get("metadata") if isinstance(sanitized.get("metadata"), dict) else {}
     sanitized["calendar"] = _sanitize_calendar_payload(sanitized.get("calendar"))
     sanitized["mail"] = _sanitize_mail_payload(sanitized.get("mail"))
+    sanitized["browser"] = _sanitize_browser_payload(sanitized.get("browser"))
+    sanitized["macos"] = _sanitize_macos_payload(sanitized.get("macos"))
     sanitized["note"] = _sanitize_note_payload(sanitized.get("note"))
     return sanitized
 
@@ -749,7 +808,8 @@ def generate_structured_extraction(
         return None
 
     intent = str(baseline.get("intent") or "")
-    system_prompt = _build_structured_extraction_prompt(intent)
+    domain = str(baseline.get("domain") or "") or None
+    system_prompt = _build_structured_extraction_prompt(intent, domain)
     user_prompt = {
         "channel": channel,
         "message": message,

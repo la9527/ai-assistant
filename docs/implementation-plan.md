@@ -70,6 +70,8 @@
 - Slack 실환경 검증은 공개 도메인과 HTTPS 준비 이후로 보류 상태다.
 - `browser-runner`를 선택 프로필 서비스로 두고 `POST /assistant/api/browser/read` read-only 웹 추출 경로를 추가했다.
 - 호스트용 `macos_runner`를 추가하고 승인 후 Notes 메모를 생성하는 AppleScript 시나리오를 연결했다.
+- skill-first runtime 전환 기준으로 `mail`, `calendar`, `browser`, `macos`, `note`, `search` 도메인 `BaseSkill` 구현과 runtime registry 연결을 완료했다.
+- LangGraph workflow는 도메인별 실행 노드 대신 공통 `execute_skill` 경로를 우선 사용하고, `automation.py` legacy 경로도 runtime-first fallback 구조로 단순화했다.
 - 외부 접근은 `Kakao=Cloudflare Tunnel`, `운영자 브라우저/n8n/SSH=Tailscale` 기준으로 정리하고, Compose에 선택 프로필 `cloudflared` 서비스를 추가했다.
 - 브라우저 기반 macOS 원격 접근이 필요할 때를 위해 Compose에 선택 프로필 `remote-desktop` 과 `Guacamole + guacd` 구성을 추가하고, Caddy `/guacamole/*` 경로로만 노출하도록 정리했다.
 - `cloudflared`는 `docker compose --env-file .env --profile edge up -d cloudflared` 기준으로 기동 검증했고, 공개 호스트에서 `GET /assistant/api/health`, `POST /assistant/api/kakao/webhook` 모두 실제 응답을 확인했다.
@@ -81,11 +83,16 @@
 - 브라우저 러너 확장: `POST /browse/screenshot` (full-page PNG base64), `POST /browse/search` (Google 검색 결과) 엔드포인트를 추가하고 API에 프록시 경로를 연결했다.
 - Worker 비동기 큐: `worker/main.py`를 Redis BRPOP 소비자로 재구현하고, API에 `POST /api/tasks/async` 발행과 `GET /api/tasks/async/{task_id}` 결과 조회 엔드포인트를 추가했다. 실제 Redis 큐 → Worker 처리 → 결과 저장 end-to-end 검증 완료.
 - API 보안: `API_KEY` 환경변수가 설정되면 `X-API-Key` 헤더 기반 인증 미들웨어가 활성화된다. `/api/health`, `/api/kakao/*`, `/api/slack/*` 등은 인증 면제. `slowapi` 기반 rate limiting은 `/api/chat`에 분당 30회 기본값으로 적용된다.
+- 2026-03-22 재검증 기준으로 `GET /assistant/api/health`, `POST /assistant/api/chat`, `POST /assistant/api/kakao/webhook`, `POST /assistant/api/actions/approve` 는 정상 응답했다. 다만 일정 생성 승인 실행은 `assistant-calendar-create` webhook 이 `200 OK` 와 빈 body 를 반환해 `route=n8n_fallback` 으로 내려갔다.
+- 후속 n8n event log / SQLite execution 점검 결과, 위 fallback 의 직접 원인은 live `assistant-calendar-create` workflow 의 `Create Calendar Event` 노드에서 발생한 `Google Calendar account` OAuth credential 만료 또는 revoke 상태였다.
+- 저장소의 calendar create/update/delete workflow 는 이 경우에도 `Respond to Webhook` 으로 명시적 JSON error body 를 반환하도록 error branch 를 추가했다. 다만 live n8n 에는 별도 import 또는 수동 반영이 필요하다.
 
 ## 현재 기준 남은 우선순위
 
 - [ ] 1. `docs/implementation-plan.md`, `README.md`, `docs/architecture.md` 기준의 문서 상태를 계속 동기화한다.
-- [ ] 1-1. Gmail 읽기 기능을 `gmail_list`, `gmail_detail`, `gmail_thread` 구조로 재설계하고, 문서 설계와 실제 schema/workflow 구현을 순차 반영한다.
+- [ ] 1-3. n8n calendar/gmail workflow 가 `Respond to Webhook` 에서 항상 JSON body를 반환하도록 live workflow 에 최신 JSON 을 다시 반영하고, Google Calendar credential 재연결 뒤 재검증한다.
+- [ ] 1-1. Gmail 읽기 기능을 `gmail_list`, `gmail_detail`, `gmail_thread` 구조로 재설계하고, 문서 설계와 실제 schema/workflow 구현을 순차 반영한다. 메일 도메인 전반의 skill-first 전환 설계는 [docs/mail-skill-first-architecture.md](mail-skill-first-architecture.md)를 기준 문서로 사용한다.
+- [ ] 1-2. calendar, mail, browser, macOS/PC 자동화 전반의 공통 전환 기준은 [docs/automation-skill-first-architecture.md](automation-skill-first-architecture.md)를 기준 문서로 사용한다.
 - [x] 2. 공통 extraction schema를 기준으로 calendar, mail, note 요청을 순차적으로 LLM JSON extraction 기반으로 전환한다.
 - [x] 3. session history와 state 저장 구조를 활용해 참조형 요청, 후보 선택형 삭제, 승인 후 재개 흐름을 보강한다. 순서 참조("두 번째", "1번") 파싱, 응답 후보 추출, 세션 상태 기반 후보 선택 적용, 도메인 계승 로직 구현 완료.
 - [ ] 4. Slack 앱 설정에 `/assistant/api/slack/events`, `/assistant/api/slack/interactions` 를 반영하고 실제 워크스페이스에서 검증한다.
@@ -195,9 +202,13 @@
 
 ## 승인 후 실제 실행 검증 결과
 
-- `내일 오후 3시에 MLX 검증 치과 일정 추가해줘` 요청은 승인 후 `route=n8n` 으로 실제 일정 생성 완료 응답을 확인했다.
-- `내일 오후 3시 MLX 검증 치과 일정 삭제해줘` 요청은 승인 후 `route=n8n` 으로 실제 일정 삭제 완료 응답을 확인했다.
-- `test@example.com로 제목 MLX 검증 메일 내용 오늘 작업 완료 메일 초안 작성해줘` 요청은 승인 후 `route=n8n` 으로 실제 Draft 생성 완료 응답을 확인했다.
+- 과거 검증에서는 `calendar_create`, `calendar_delete`, `gmail_draft` 요청이 승인 후 `route=n8n` 완료 응답까지 연결된 적이 있다.
+- 2026-03-22 재검증에서는 `calendar_create` 승인 티켓 발급과 승인 API 호출까지는 정상 동작했지만, 최종 실행은 `route=n8n_fallback` 으로 반환됐다.
+- 같은 시점에 `http://localhost:5678/webhook/assistant-calendar-create` 를 직접 호출하면 `200 OK` 이지만 body가 비어 있었다.
+- 이후 live n8n event log 와 execution DB 를 확인한 결과, 실제 blocker 는 skill runtime 코드가 아니라 `Google Calendar account` credential 만료와 live workflow 의 에러 응답 부재였다.
+- 이후 live workflow 를 SQLite 기준으로 재반영했고, `continueErrorOutput` 뿐 아니라 `continueOnFail + If` 방식까지 시도했지만 현 `n8nio/n8n:2.12.3` 의 Google Calendar node 는 credential 만료 시 direct webhook body 를 여전히 비워 둔다.
+- 대신 API fallback 응답은 `Google Calendar account` credential 재연결 안내를 직접 반환하도록 보강했고, 2026-03-21 재검증에서 approval API 응답이 해당 안내 문구를 실제로 반환함을 확인했다.
+- 다음 운영 단계는 n8n UI 에서 `Google Calendar account` credential 을 재연결한 뒤 calendar create/update/delete 승인 실행을 다시 end-to-end 재검증하는 것이다.
 
 ## MLX launchd 운영 확인 절차
 

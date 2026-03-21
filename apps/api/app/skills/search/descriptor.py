@@ -15,6 +15,8 @@ WEB_SEARCH_SKILL = SkillDescriptor(
         "어떻게", "방법",
         "가격", "날씨", "환율", "주가",
     ],
+    intent_examples=["오늘 날씨 알려줘", "환율 검색해줘", "최신 AI 뉴스 찾아줘"],
+    disambiguation_hints=["일반 웹 검색", "브라우저 결과 페이지 확보가 필수는 아님"],
     executor_type="api",
     executor_ref="web_search",
     approval_required=False,

@@ -53,6 +53,7 @@
       "name": "Search Matching Event",
       "type": "n8n-nodes-base.googleCalendar",
       "typeVersion": 1.3,
+      "continueOnFail": true,
       "position": [820, 320],
       "alwaysOutputData": true,
       "credentials": {
@@ -61,6 +62,37 @@
           "name": "Google Calendar account"
         }
       }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "search-error-check",
+              "leftValue": "={{ $json.error }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "search-failed-if-node",
+      "name": "Search Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1080, 320]
     },
     {
       "parameters": {
@@ -91,7 +123,7 @@
       "name": "Event Exists?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
-      "position": [1080, 320]
+      "position": [1340, 320]
     },
     {
       "parameters": {
@@ -114,6 +146,7 @@
       "name": "Update Calendar Event",
       "type": "n8n-nodes-base.googleCalendar",
       "typeVersion": 1.3,
+      "continueOnFail": true,
       "position": [1340, 220],
       "credentials": {
         "googleCalendarOAuth2Api": {
@@ -124,13 +157,44 @@
     },
     {
       "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "update-error-check",
+              "leftValue": "={{ $json.error }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "update-failed-if-node",
+      "name": "Update Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1600, 220]
+    },
+    {
+      "parameters": {
         "jsCode": "const event = $json;\nconst formatTime = (value) => new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value));\nconst title = event.summary || '제목 없는 일정';\nconst start = event.start?.dateTime ? formatTime(event.start.dateTime) : (event.start?.date || '날짜 미확인');\nconst end = event.end?.dateTime ? formatTime(event.end.dateTime) : '';\nreturn [{ json: { reply: end ? `${title} 일정을 ${start}부터 ${end}까지로 변경했습니다.` : `${title} 일정을 변경했습니다.`, action: 'calendar-update', event_id: event.id || '' } }];"
       },
       "id": "update-summary-node",
       "name": "Summarize Updated Event",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1600, 220]
+      "position": [1860, 180]
     },
     {
       "parameters": {
@@ -141,6 +205,16 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [1340, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $json ?? {};\nconst rawError = payload.error?.message ?? payload.error ?? payload.message ?? payload.description ?? payload.cause?.message ?? payload.metadata?.error?.message ?? '';\nconst message = String(rawError || 'Google Calendar workflow execution failed');\nconst needsReconnect = /(authorization grant|refresh token|oauth|invalid credentials|unauthorized|forbidden|revoked|expired)/i.test(message);\nconst reply = needsReconnect\n  ? 'Google Calendar 연결이 만료되었거나 권한이 끊어져 일정 변경을 완료하지 못했습니다. n8n의 Google Calendar account credential을 다시 연결해 주세요.'\n  : `일정 변경 실행 중 오류가 발생했습니다. ${message}`;\nreturn [{ json: { reply, action: 'calendar-update-error', error: message, needs_reconnect: needsReconnect } }];"
+      },
+      "id": "update-error-reply-node",
+      "name": "Build Calendar Update Error Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1860, 420]
     },
     {
       "parameters": {
@@ -158,19 +232,36 @@
   "connections": {
     "Webhook": { "main": [[{ "node": "Normalize Update Request", "type": "main", "index": 0 }]] },
     "Normalize Update Request": { "main": [[{ "node": "Search Matching Event", "type": "main", "index": 0 }]] },
-    "Search Matching Event": { "main": [[{ "node": "Event Exists?", "type": "main", "index": 0 }]] },
+    "Search Matching Event": {
+      "main": [[{ "node": "Search Failed?", "type": "main", "index": 0 }]]
+    },
+    "Search Failed?": {
+      "main": [
+        [{ "node": "Build Calendar Update Error Reply", "type": "main", "index": 0 }],
+        [{ "node": "Event Exists?", "type": "main", "index": 0 }]
+      ]
+    },
     "Event Exists?": {
       "main": [
         [{ "node": "Update Calendar Event", "type": "main", "index": 0 }],
         [{ "node": "Build Not Found Reply", "type": "main", "index": 0 }]
       ]
     },
-    "Update Calendar Event": { "main": [[{ "node": "Summarize Updated Event", "type": "main", "index": 0 }]] },
+    "Update Calendar Event": {
+      "main": [[{ "node": "Update Failed?", "type": "main", "index": 0 }]]
+    },
+    "Update Failed?": {
+      "main": [
+        [{ "node": "Build Calendar Update Error Reply", "type": "main", "index": 0 }],
+        [{ "node": "Summarize Updated Event", "type": "main", "index": 0 }]
+      ]
+    },
     "Summarize Updated Event": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] },
-    "Build Not Found Reply": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] }
+    "Build Not Found Reply": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] },
+    "Build Calendar Update Error Reply": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] }
   },
   "settings": {},
   "pinData": {},
-  "versionId": "calendar-update-live-001",
+  "versionId": "calendar-update-live-004",
   "tags": []
 }

@@ -20,6 +20,8 @@ class SkillDescriptor(BaseModel):
     domain: str
     action: str
     trigger_keywords: list[str] = Field(default_factory=list)
+    intent_examples: list[str] = Field(default_factory=list)
+    disambiguation_hints: list[str] = Field(default_factory=list)
     input_schema: dict | None = None
     output_schema: dict | None = None
     executor_type: Literal["n8n", "macos", "browser", "mcp", "local_function", "api"] = "n8n"

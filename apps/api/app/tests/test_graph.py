@@ -87,6 +87,19 @@ class ProcessMessageFallbackTests(unittest.TestCase):
         self.assertEqual(result["route"], "validation_error")
         self.assertIn("같은 대화에서 먼저 메일 목록", result["reply"])
 
+    @patch("app.search.run_web_search", return_value={"items": [{"title": "서울 날씨", "url": "https://example.com/weather"}]})
+    @patch("app.search.format_search_results_for_llm", return_value="서울 날씨: 맑음")
+    @patch("app.llm.generate_local_reply", return_value=("검색 기반 응답", "local_llm"))
+    def test_web_search_uses_runtime_path(self, _mock_llm, _mock_format, _mock_search):
+        from app.automation import _process_message_legacy
+        result = _process_message_legacy(
+            message="오늘 날씨 알려줘",
+            channel="test",
+            session_id="s1",
+        )
+        self.assertEqual(result["route"], "web_search")
+        self.assertEqual(result["action_type"], "web_search")
+
 
 class MacOSNewIntentsTests(unittest.TestCase):
     """새 macOS 인텐트 분류 및 라우팅 검증."""

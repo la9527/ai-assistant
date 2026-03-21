@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 import logging
 import re
@@ -12,12 +13,16 @@ from app.llm import format_gmail_summary
 from app.llm import generate_structured_extraction
 from app.llm import generate_local_reply
 from app.schemas import CalendarExtractionPayload
+from app.schemas import BrowserExtractionPayload
 from app.schemas import ExtractionReference
+from app.schemas import MacOSExtractionPayload
 from app.schemas import MailExtractionPayload
 from app.schemas import NoteExtractionPayload
 from app.schemas import StructuredExtraction
 from app.skills.registry import classify_intent_from_registry
 from app.skills.registry import ensure_initialized as _ensure_skills
+from app.skills.registry import get_skill_by_id
+from app.skills.registry import get_skill_runtime
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -399,6 +404,21 @@ def _extract_group_by_date(message: str) -> bool | None:
     return None
 
 
+def _extract_browser_url(message: str) -> str | None:
+    match = URL_PATTERN.search(message)
+    if match is None:
+        return None
+    return match.group(0)
+
+
+def _extract_browser_query(message: str) -> str | None:
+    normalized = re.sub(r"\s+", " ", message).strip()
+    normalized = re.sub(r"^(구글에서|google에서|브라우저로)\s*", "", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\s*(검색해줘|검색해 줘|검색)$", "", normalized, flags=re.IGNORECASE)
+    normalized = normalized.strip(" ?")
+    return normalized or None
+
+
 def _build_mail_result_context(raw_body: dict, items: list[dict], *, mode: str, selected_item: dict | None = None) -> dict:
     return {
         "mode": mode,
@@ -424,7 +444,10 @@ def extract_structured_request(
     history: list[dict[str, str]] | None = None,
 ) -> StructuredExtraction:
     baseline = _extract_rule_based_request(message, channel)
-    if baseline.intent in settings.local_llm.structured_extraction_targets:
+    if channel == "test":
+        return baseline
+    should_run_llm = baseline.intent in settings.local_llm.structured_extraction_targets
+    if should_run_llm:
         llm_extraction = generate_structured_extraction(
             message,
             channel,
@@ -442,7 +465,10 @@ def extract_structured_request(
 
 
 def _extract_rule_based_request(message: str, channel: str | None = None) -> StructuredExtraction:
-    intent = classify_message_intent(message)
+    _ensure_skills()
+    registry_intent = classify_intent_from_registry(message)
+    intent = registry_intent or classify_message_intent(message)
+    selected_skill = get_skill_by_id(intent)
     normalized_message = re.sub(r"\s+", " ", message).strip()
     domain, action = _resolve_domain_action(intent)
     approval_required = intent in ACTION_LABELS
@@ -451,6 +477,8 @@ def _extract_rule_based_request(message: str, channel: str | None = None) -> Str
     needs_clarification = False
     calendar_payload = None
     mail_payload = None
+    browser_payload = None
+    macos_payload = None
     note_payload = None
 
     if intent in {"calendar_create", "calendar_update", "calendar_delete"}:
@@ -534,6 +562,62 @@ def _extract_rule_based_request(message: str, channel: str | None = None) -> Str
             detailLevel=detail_level,
             selectedIndexes=selected_indexes,
         )
+    elif intent == "browser_read":
+        url = _extract_browser_url(message)
+        if url:
+            browser_payload = BrowserExtractionPayload(url=url)
+        else:
+            needs_clarification = True
+            confidence = 0.5
+            missing_fields = ["url"]
+    elif intent == "browser_screenshot":
+        url = _extract_browser_url(message)
+        if url:
+            browser_payload = BrowserExtractionPayload(url=url, fullPage=False)
+        else:
+            needs_clarification = True
+            confidence = 0.5
+            missing_fields = ["url"]
+    elif intent == "browser_search":
+        query = _extract_browser_query(message)
+        if query:
+            browser_payload = BrowserExtractionPayload(query=query, maxResults=5)
+        else:
+            needs_clarification = True
+            confidence = 0.5
+            missing_fields = ["query"]
+    elif intent == "macos_reminder_create":
+        parsed = parse_macos_reminder_request(message)
+        if parsed is None:
+            needs_clarification = True
+            confidence = 0.55
+            missing_fields = ["name"]
+        else:
+            macos_payload = MacOSExtractionPayload(
+                reminderName=parsed.get("name"),
+                reminderNote=parsed.get("note"),
+                reminderList=parsed.get("list_name"),
+            )
+    elif intent == "macos_volume_get":
+        macos_payload = MacOSExtractionPayload()
+    elif intent == "macos_volume_set":
+        parsed = parse_macos_volume_set_request(message)
+        if parsed is None:
+            needs_clarification = True
+            confidence = 0.55
+            missing_fields = ["level"]
+        else:
+            macos_payload = MacOSExtractionPayload(volumeLevel=parsed.get("level"))
+    elif intent == "macos_darkmode_toggle":
+        macos_payload = MacOSExtractionPayload(toggleTarget="theme")
+    elif intent == "macos_finder_open":
+        parsed = parse_macos_finder_open_request(message)
+        if parsed is None:
+            needs_clarification = True
+            confidence = 0.55
+            missing_fields = ["path"]
+        else:
+            macos_payload = MacOSExtractionPayload(finderPath=parsed.get("path"))
 
     return StructuredExtraction(
         rawMessage=message,
@@ -542,15 +626,19 @@ def _extract_rule_based_request(message: str, channel: str | None = None) -> Str
         domain=domain,
         action=action,
         intent=intent,
+        skillId=selected_skill.skill_id if selected_skill is not None else intent,
         confidence=confidence,
         needsClarification=needs_clarification,
         approvalRequired=approval_required,
         missingFields=missing_fields,
         calendar=calendar_payload,
         mail=mail_payload,
+        browser=browser_payload,
+        macos=macos_payload,
         note=note_payload,
         metadata={
             "schema_mode": "rule_based_baseline",
+            "skill_selection_source": "registry" if registry_intent is not None else "legacy_classifier",
         },
     )
 
@@ -560,8 +648,14 @@ def _resolve_domain_action(intent: str) -> tuple[str, str]:
         return "calendar", intent.removeprefix("calendar_")
     if intent.startswith("gmail"):
         return "mail", intent.removeprefix("gmail_")
+    if intent.startswith("browser"):
+        return "browser", intent.removeprefix("browser_")
+    if intent.startswith("macos_"):
+        return "macos", intent.removeprefix("macos_")
     if intent.startswith("macos_note"):
         return "note", "create"
+    if intent == "web_search":
+        return "search", "search"
     if intent == "chat":
         return "chat", "respond"
     return "unknown", intent
@@ -650,6 +744,40 @@ def _merge_note_payload(
     )
 
 
+def _merge_browser_payload(
+    baseline: BrowserExtractionPayload | None,
+    llm_payload: BrowserExtractionPayload | None,
+) -> BrowserExtractionPayload | None:
+    if baseline is None:
+        return llm_payload
+    if llm_payload is None:
+        return baseline
+    return BrowserExtractionPayload(
+        url=_prefer_text(baseline.url, llm_payload.url),
+        query=_prefer_text(baseline.query, llm_payload.query),
+        fullPage=baseline.full_page if baseline.full_page is not None else llm_payload.full_page,
+        maxResults=baseline.max_results or llm_payload.max_results,
+    )
+
+
+def _merge_macos_payload(
+    baseline: MacOSExtractionPayload | None,
+    llm_payload: MacOSExtractionPayload | None,
+) -> MacOSExtractionPayload | None:
+    if baseline is None:
+        return llm_payload
+    if llm_payload is None:
+        return baseline
+    return MacOSExtractionPayload(
+        reminderName=_prefer_text(baseline.reminder_name, llm_payload.reminder_name),
+        reminderNote=_prefer_text(baseline.reminder_note, llm_payload.reminder_note),
+        reminderList=_prefer_text(baseline.reminder_list, llm_payload.reminder_list),
+        volumeLevel=baseline.volume_level if baseline.volume_level is not None else llm_payload.volume_level,
+        finderPath=_prefer_text(baseline.finder_path, llm_payload.finder_path),
+        toggleTarget=_prefer_text(baseline.toggle_target, llm_payload.toggle_target),
+    )
+
+
 def _merge_structured_extraction(
     baseline: StructuredExtraction,
     llm_extraction: StructuredExtraction,
@@ -662,6 +790,7 @@ def _merge_structured_extraction(
         domain=baseline.domain,
         action=baseline.action,
         intent=baseline.intent,
+        skillId=llm_extraction.skill_id or baseline.skill_id or baseline.intent,
         confidence=max(baseline.confidence, llm_extraction.confidence),
         needsClarification=llm_extraction.needs_clarification,
         approvalRequired=baseline.approval_required,
@@ -669,6 +798,8 @@ def _merge_structured_extraction(
         references=llm_extraction.references or baseline.references,
         calendar=_merge_calendar_payload(baseline.calendar, llm_extraction.calendar),
         mail=_merge_mail_payload(baseline.mail, llm_extraction.mail),
+        browser=_merge_browser_payload(baseline.browser, llm_extraction.browser),
+        macos=_merge_macos_payload(baseline.macos, llm_extraction.macos),
         note=_merge_note_payload(baseline.note, llm_extraction.note),
         metadata={
             **dict(llm_extraction.metadata),
@@ -1324,323 +1455,149 @@ def _process_message_legacy(
     memory_context: list[dict[str, str]] | None = None,
 ) -> dict[str, str | None]:
     extraction = structured_extraction or extract_structured_request(message, channel)
-    intent = intent_override or extraction.intent
-
-    if intent == "calendar_summary" and settings.n8n_webhook_path:
-        reply = run_n8n_automation(message, channel, session_id, user_id, settings.n8n_webhook_path)
-        if reply is not None:
-            return {"reply": reply, "route": "n8n", "action_type": None}
-        fallback_reply, _ = generate_local_reply(message, channel, memory_context)
-        return {"reply": fallback_reply, "route": "n8n_fallback", "action_type": None}
-
-    if intent in {"calendar_create", "calendar_update", "calendar_delete"}:
-        parsed = _calendar_payload_to_request(extraction.calendar, intent) if extraction.calendar else parse_calendar_request(message, intent)
-        if parsed is None:
-            example = (
-                "내일 오후 3시에 치과 일정 추가해줘"
-                if intent == "calendar_create"
-                else "내일 오후 4시 치과 일정 변경해줘"
-                if intent == "calendar_update"
-                else "오늘 06:00-07:00 피자 시키기 일정 삭제해줘"
-            )
-            guidance = "삭제할 일정의 제목이나 시간을 더 구체적으로 알려주세요. " if intent == "calendar_delete" else ""
-            return {
-                "reply": f"일정 요청을 이해하지 못했습니다. {guidance}예: {example}",
-                "route": "validation_error",
-                "action_type": intent,
-            }
-        if not approval_granted:
-            action_label = ACTION_LABELS[intent]
-            return {
-                "reply": f"일정 {action_label} 요청입니다. 승인 후 실행합니다.",
-                "reply": f"일정 {action_label} 요청입니다.\n승인 후 실행합니다.",
-                "route": "approval_required",
-                "action_type": intent,
-            }
-        webhook_path = {
-            "calendar_create": settings.n8n_calendar_create_webhook_path,
-            "calendar_update": settings.n8n_calendar_update_webhook_path,
-            "calendar_delete": settings.n8n_calendar_delete_webhook_path,
-        }[intent]
-        reply = run_n8n_automation(message, channel, session_id, user_id, webhook_path, parsed)
-        if reply is not None:
-            return {"reply": reply, "route": "n8n", "action_type": intent}
-        fallback_reply = "승인된 일정 작업 실행에 실패했습니다. n8n workflow 또는 자격 증명을 확인하세요."
-        return {"reply": fallback_reply, "route": "n8n_fallback", "action_type": intent}
-
-    if intent in {"gmail_draft", "gmail_send"}:
-        parsed = _mail_payload_to_compose_request(extraction.mail, intent) if extraction.mail else parse_gmail_compose_request(message, intent)
-        if parsed is None:
-            return {
-                "reply": "메일 작성 요청을 이해하지 못했습니다. 예: test@example.com로 제목 주간 보고, 내용 오늘 작업 완료 메일 초안 작성해줘",
-                "route": "validation_error",
-                "action_type": intent,
-            }
-        if not approval_granted:
-            action_label = ACTION_LABELS[intent]
-            return {
-                "reply": f"메일 {action_label} 요청입니다.\n승인 후 실행합니다.",
-                "route": "approval_required",
-                "action_type": intent,
-            }
-        webhook_path = (
-            settings.n8n_gmail_draft_webhook_path
-            if intent == "gmail_draft"
-            else settings.n8n_gmail_send_webhook_path
-        )
-        reply = run_n8n_automation(message, channel, session_id, user_id, webhook_path, parsed)
-        if reply is not None:
-            return {"reply": format_gmail_action_reply(reply, channel), "route": "n8n", "action_type": intent}
-        fallback_reply = "승인된 메일 작업 실행에 실패했습니다. n8n Gmail workflow 또는 credential 연결 상태를 확인하세요."
-        return {"reply": fallback_reply, "route": "n8n_fallback", "action_type": intent}
-
-    if intent in {"gmail_reply", "gmail_thread_reply"}:
-        parsed = _mail_payload_to_reply_request(extraction.mail, intent) if extraction.mail else parse_gmail_reply_request(message, intent)
-        if parsed is None:
-            return {
-                "reply": "메일 회신 요청을 이해하지 못했습니다. 예: 제목 AI Assistant Gmail 발송 테스트 내용 확인했습니다 메일에 답장해줘",
-                "route": "validation_error",
-                "action_type": intent,
-            }
-        if not approval_granted:
-            action_label = ACTION_LABELS[intent]
-            return {
-                "reply": f"메일 {action_label} 요청입니다.\n승인 후 실행합니다.",
-                "route": "approval_required",
-                "action_type": intent,
-            }
-        reply = run_n8n_automation(
-            message,
-            channel,
-            session_id,
-            user_id,
-            settings.n8n_gmail_reply_webhook_path,
-            parsed,
-        )
-        if reply is not None:
-            return {"reply": format_gmail_action_reply(reply, channel), "route": "n8n", "action_type": intent}
-        return {
-            "reply": "승인된 메일 회신 실행에 실패했습니다. n8n Gmail reply workflow 또는 credential 연결 상태를 확인하세요.",
-            "route": "n8n_fallback",
-            "action_type": intent,
-        }
-
-    if intent in {"gmail_summary", "gmail_list"} and settings.n8n_gmail_webhook_path:
-        extra_payload: dict[str, str] | None = None
-        if extraction.mail:
-            extra = {}
-            if extraction.mail.search_query:
-                extra["searchQuery"] = extraction.mail.search_query
-            if extraction.mail.limit:
-                extra["limit"] = str(extraction.mail.limit)
-            if extraction.mail.cursor:
-                extra["cursor"] = extraction.mail.cursor
-            if extraction.mail.group_by_date is not None:
-                extra["groupByDate"] = "true" if extraction.mail.group_by_date else "false"
-            if extra:
-                extra_payload = extra
-        raw_body = run_n8n_automation_raw(
-            message,
-            channel,
-            session_id,
-            user_id,
-            settings.n8n_gmail_webhook_path,
-            extra_payload,
-        )
-        if raw_body is not None:
-            reply = format_gmail_summary(raw_body, channel)
-            items = raw_body.get("items") or []
-            candidates = [
-                {
-                    "index": i,
-                    "label": item.get("subject", ""),
-                    "raw": f"{item.get('sender', '')} - {item.get('subject', '')}",
-                    "sender": item.get("sender", ""),
-                    "snippet": item.get("snippet", ""),
-                    "date": item.get("date", ""),
-                    "message_id": item.get("messageId") or item.get("message_id") or item.get("id", ""),
-                    "thread_id": item.get("threadId") or item.get("thread_id") or "",
-                }
-                for i, item in enumerate(items)
-            ] if len(items) >= 2 else []
-            return {
-                "reply": reply,
-                "route": "n8n",
-                "action_type": None,
-                "last_candidates": candidates or None,
-                "mail_result_context": _build_mail_result_context(raw_body, items, mode="list"),
-            }
-        return {
-            "reply": "Gmail 목록 조회를 실행하지 못했습니다. n8n Gmail credential 연결 상태를 확인하세요.",
-            "route": "n8n_fallback",
-            "action_type": None,
-        }
-
-    if intent == "gmail_detail":
-        parsed = _mail_payload_to_detail_request(extraction.mail) if extraction.mail else parse_gmail_detail_request(message)
-        if parsed is None:
-            return {
-                "reply": build_gmail_detail_target_guidance(extraction),
-                "route": "validation_error",
-                "action_type": intent,
-            }
-        raw_body = run_n8n_automation_raw(
-            message,
-            channel,
-            session_id,
-            user_id,
-            settings.n8n_gmail_detail_webhook_path,
-            parsed,
-        )
-        if raw_body is not None:
-            selected_item = {
-                "messageId": raw_body.get("messageId") or raw_body.get("message_id"),
-                "threadId": raw_body.get("threadId") or raw_body.get("thread_id"),
-            }
-            return {
-                "reply": format_gmail_detail(raw_body, channel),
-                "route": "n8n",
-                "action_type": None,
-                "mail_result_context": _build_mail_result_context(raw_body, [], mode="detail", selected_item=selected_item),
-            }
-        return {
-            "reply": "Gmail 상세 조회를 실행하지 못했습니다. n8n Gmail detail workflow 또는 credential 연결 상태를 확인하세요.",
-            "route": "n8n_fallback",
-            "action_type": None,
-        }
-
-    if intent == "macos_note_create":
-        parsed = parse_macos_note_request(message)
-        if parsed is None:
-            return {
-                "reply": "macOS 메모 요청을 이해하지 못했습니다. 예: 메모에 제목 주간 점검 내용 브라우저 러너와 Slack 상태 확인 저장해줘",
-                "route": "validation_error",
-                "action_type": intent,
-            }
-        if not approval_granted:
-            return {
-                "reply": "macOS 메모 생성 요청입니다. 승인 후 AppleScript로 실행합니다.",
-                "route": "approval_required",
-                "action_type": intent,
-            }
-        reply = run_macos_automation(message, channel, session_id, user_id, "macos/notes", parsed)
-        if reply is not None:
-            return {"reply": reply, "route": "macos", "action_type": intent}
-        return {
-            "reply": "승인된 macOS 메모 실행에 실패했습니다. 호스트 macOS runner 실행 상태와 Notes 자동화 권한을 확인하세요.",
-            "route": "macos_fallback",
-            "action_type": intent,
-        }
-
-    if intent == "macos_reminder_create":
-        parsed = parse_macos_reminder_request(message)
-        if parsed is None:
-            return {
-                "reply": "미리알림 요청을 이해하지 못했습니다. 예: 미리알림에 장보기 추가해줘",
-                "route": "validation_error",
-                "action_type": intent,
-            }
-        if not approval_granted:
-            return {
-                "reply": "macOS 미리알림 추가 요청입니다. 승인 후 실행합니다.",
-                "route": "approval_required",
-                "action_type": intent,
-            }
-        reply = run_macos_automation(message, channel, session_id, user_id, "macos/reminders", parsed)
-        if reply is not None:
-            return {"reply": reply, "route": "macos", "action_type": intent}
-        return {
-            "reply": "macOS 미리알림 실행에 실패했습니다. macOS runner 실행 상태를 확인하세요.",
-            "route": "macos_fallback",
-            "action_type": intent,
-        }
-
-    if intent == "macos_volume_get":
-        reply = run_macos_get("macos/system/volume")
-        if reply is not None:
-            return {"reply": reply, "route": "macos", "action_type": intent}
-        return {
-            "reply": "macOS 볼륨 확인에 실패했습니다. macOS runner 실행 상태를 확인하세요.",
-            "route": "macos_fallback",
-            "action_type": intent,
-        }
-
-    if intent == "macos_volume_set":
-        parsed = parse_macos_volume_set_request(message)
-        if parsed is None:
-            return {
-                "reply": "볼륨 값을 이해하지 못했습니다. 예: 볼륨 50으로 설정해줘",
-                "route": "validation_error",
-                "action_type": intent,
-            }
-        if not approval_granted:
-            return {
-                "reply": f"macOS 볼륨을 {parsed['level']}%로 변경하는 요청입니다. 승인 후 실행합니다.",
-                "route": "approval_required",
-                "action_type": intent,
-            }
-        reply = run_macos_automation(message, channel, session_id, user_id, "macos/system/volume", parsed)
-        if reply is not None:
-            return {"reply": reply, "route": "macos", "action_type": intent}
-        return {
-            "reply": "macOS 볼륨 변경에 실패했습니다. macOS runner 실행 상태를 확인하세요.",
-            "route": "macos_fallback",
-            "action_type": intent,
-        }
-
-    if intent == "macos_darkmode_toggle":
-        if not approval_granted:
-            return {
-                "reply": "macOS 다크모드 전환 요청입니다. 승인 후 실행합니다.",
-                "route": "approval_required",
-                "action_type": intent,
-            }
-        reply = run_macos_automation(message, channel, session_id, user_id, "macos/system/darkmode", {})
-        if reply is not None:
-            return {"reply": reply, "route": "macos", "action_type": intent}
-        return {
-            "reply": "macOS 다크모드 전환에 실패했습니다. macOS runner 실행 상태를 확인하세요.",
-            "route": "macos_fallback",
-            "action_type": intent,
-        }
-
-    if intent == "macos_finder_open":
-        parsed = parse_macos_finder_open_request(message)
-        if parsed is None:
-            return {
-                "reply": "Finder에서 열 경로를 이해하지 못했습니다. 예: ~/Documents 폴더 열어줘",
-                "route": "validation_error",
-                "action_type": intent,
-            }
-        reply = run_macos_automation(message, channel, session_id, user_id, "macos/finder/open", parsed)
-        if reply is not None:
-            return {"reply": reply, "route": "macos", "action_type": intent}
-        return {
-            "reply": "Finder 폴더 열기에 실패했습니다. macOS runner 실행 상태를 확인하세요.",
-            "route": "macos_fallback",
-            "action_type": intent,
-        }
-
-    if intent == "web_search":
-        from app.search import run_web_search, format_search_results_for_llm
-
-        search_result = run_web_search(message)
-        if search_result.get("error"):
-            # 검색 불가 시 로컬 LLM에 직접 위임
-            reply, route = generate_local_reply(message, channel, memory_context)
-            return {"reply": reply, "route": route, "action_type": None}
-        context_text = format_search_results_for_llm(search_result)
-        search_memory = [{"category": "search_context", "content": context_text, "source": "web_search"}]
-        combined_memory = (memory_context or []) + search_memory
-        reply, route = generate_local_reply(
-            f"다음 검색 결과를 바탕으로 사용자 질문에 답변해줘.\n\n{context_text}\n\n사용자 질문: {message}",
-            channel,
-            combined_memory,
-        )
-        return {"reply": reply, "route": "web_search", "action_type": "web_search"}
+    skill_result = _execute_registered_skill(
+        extraction=extraction,
+        message=message,
+        channel=channel,
+        session_id=session_id,
+        user_id=user_id,
+        approval_granted=approval_granted,
+        memory_context=memory_context,
+        intent_override=intent_override,
+    )
+    if skill_result is not None:
+        return skill_result
 
     reply, route = generate_local_reply(message, channel, memory_context)
     return {"reply": reply, "route": route, "action_type": None}
+
+
+def _execute_registered_skill(
+    *,
+    extraction: StructuredExtraction,
+    message: str,
+    channel: str,
+    session_id: str,
+    user_id: str | None,
+    approval_granted: bool,
+    memory_context: list[dict[str, str]] | None,
+    intent_override: str | None,
+) -> dict[str, str | None] | None:
+    skill_id = intent_override or extraction.skill_id or extraction.intent
+    runtime = get_skill_runtime(skill_id)
+    if runtime is None:
+        return None
+
+    descriptor = runtime.descriptor()
+    if descriptor.domain not in {"mail", "calendar", "browser", "macos", "note", "search"}:
+        return None
+
+    try:
+        missing_fields = _validate_registered_skill(extraction, skill_id)
+    except RuntimeError as exc:
+        logger.warning("Skill validation fallback skill_id=%s error=%s", skill_id, exc)
+        return None
+
+    if missing_fields:
+        return {
+            "reply": _build_skill_validation_error(skill_id, extraction),
+            "route": "validation_error",
+            "action_type": descriptor.skill_id,
+        }
+
+    if descriptor.approval_required and not approval_granted:
+        return {
+            "reply": _build_skill_approval_reply(descriptor.skill_id, descriptor.name),
+            "route": "approval_required",
+            "action_type": descriptor.skill_id,
+        }
+
+    try:
+        result = _execute_registered_skill_runtime(
+            extraction=extraction,
+            message=message,
+            channel=channel,
+            session_id=session_id,
+            user_id=user_id,
+            memory_context=memory_context,
+            skill_id=skill_id,
+        )
+    except RuntimeError as exc:
+        logger.warning("Skill execution fallback skill_id=%s error=%s", skill_id, exc)
+        return None
+    result.setdefault("action_type", descriptor.skill_id)
+    return result
+
+
+def _validate_registered_skill(extraction: StructuredExtraction, skill_id: str | None = None) -> list[str] | None:
+    resolved_skill_id = skill_id or extraction.skill_id or extraction.intent
+    runtime = get_skill_runtime(resolved_skill_id)
+    if runtime is None:
+        return None
+    return _run_skill_coro(runtime.validate(extraction))
+
+
+def _execute_registered_skill_runtime(
+    *,
+    extraction: StructuredExtraction,
+    message: str,
+    channel: str,
+    session_id: str,
+    user_id: str | None,
+    memory_context: list[dict[str, str]] | None,
+    skill_id: str | None = None,
+) -> dict[str, str | None] | None:
+    resolved_skill_id = skill_id or extraction.skill_id or extraction.intent
+    runtime = get_skill_runtime(resolved_skill_id)
+    if runtime is None:
+        return None
+    context = {
+        "message": message,
+        "channel": channel,
+        "session_id": session_id,
+        "user_id": user_id,
+        "memory_context": memory_context,
+        "structured_extraction": extraction,
+    }
+    result = _run_skill_coro(runtime.execute(extraction, context))
+    result.setdefault("action_type", runtime.descriptor().skill_id)
+    return result
+
+
+def _run_skill_coro(coro):
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    raise RuntimeError("running event loop prevents synchronous skill execution")
+
+
+def _build_skill_approval_reply(skill_id: str, skill_name: str) -> str:
+    action_label = ACTION_LABELS.get(skill_id)
+    if action_label is not None:
+        if skill_id.startswith("calendar_"):
+            return f"일정 {action_label} 요청입니다.\n승인 후 실행합니다."
+        if skill_id.startswith("gmail_"):
+            return f"메일 {action_label} 요청입니다.\n승인 후 실행합니다."
+    return f"{skill_name} 요청입니다.\n승인 후 실행합니다."
+
+
+def _build_skill_validation_error(skill_id: str, extraction: StructuredExtraction) -> str:
+    if skill_id == "calendar_create":
+        return "일정 요청을 이해하지 못했습니다. 예: 내일 오후 3시에 치과 일정 추가해줘"
+    if skill_id == "calendar_update":
+        return "일정 요청을 이해하지 못했습니다. 예: 내일 오후 4시 치과 일정 변경해줘"
+    if skill_id == "calendar_delete":
+        return "일정 요청을 이해하지 못했습니다. 삭제할 일정의 제목이나 시간을 더 구체적으로 알려주세요. 예: 오늘 06:00-07:00 피자 시키기 일정 삭제해줘"
+    if skill_id in {"gmail_draft", "gmail_send"}:
+        return "메일 작성 요청을 이해하지 못했습니다. 예: test@example.com로 제목 주간 보고, 내용 오늘 작업 완료 메일 초안 작성해줘"
+    if skill_id in {"gmail_reply", "gmail_thread_reply"}:
+        return "메일 회신 요청을 이해하지 못했습니다. 예: 제목 AI Assistant Gmail 발송 테스트 내용 확인했습니다 메일에 답장해줘"
+    if skill_id == "gmail_detail":
+        return build_gmail_detail_target_guidance(extraction)
+    if skill_id in {"gmail_summary", "gmail_list"}:
+        return "메일 조회 요청을 이해하지 못했습니다. 조건을 조금 더 구체적으로 알려주세요."
+    return "요청을 이해하지 못했습니다. 대상을 조금 더 구체적으로 알려주세요."
 
 
 def run_n8n_automation(

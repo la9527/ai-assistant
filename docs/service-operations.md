@@ -226,6 +226,24 @@ curl -sS http://127.0.0.1:1236/v1/models
 curl -sS http://127.0.0.1/assistant/api/health
 ```
 
+2026-03-22 기준 추가 실검증 결과:
+
+- `docker compose -f infra/docker/docker-compose.yml up -d --build api` 재빌드 후 `api` 컨테이너는 정상 기동했다.
+- `GET /assistant/api/health` 는 `status=ok`, `database_status=ok` 를 반환했다.
+- `POST /assistant/api/chat` 과 `POST /assistant/api/kakao/webhook` 는 프록시 경유 응답이 정상이다.
+- 일정 생성 승인 요청은 티켓 발급과 `POST /assistant/api/actions/approve` 까지 정상이나, 실제 실행은 `route=n8n_fallback` 으로 내려갔다.
+- 같은 시점 direct webhook 호출 `POST http://localhost:5678/webhook/assistant-calendar-create` 는 `200 OK` 이지만 body가 비어 있었다.
+- 이후 n8n event log 와 SQLite execution 기록을 확인한 결과, live `assistant-calendar-create` workflow 는 실제로 실행되지만 `Create Calendar Event` 노드에서 `Google Calendar account` OAuth credential 의 authorization grant 또는 refresh token 이 invalid/expired/revoked 상태라 실패했다.
+- 저장소의 `assistant-calendar-create`, `assistant-calendar-update`, `assistant-calendar-delete` workflow JSON 은 먼저 `continueErrorOutput` 브랜치 기준으로, 이후 `continueOnFail + If` 기준으로도 보강해 live n8n SQLite 에 반영했다.
+- 하지만 현재 live `n8nio/n8n:2.12.3` + `Google Calendar` node 조합에서는 credential 만료 오류 시에도 direct webhook body 가 계속 비어 있으므로, API fallback 응답에서 `Google Calendar account` credential 재연결 안내를 명시적으로 반환하도록 서버 쪽도 보강했다.
+
+운영 해석:
+
+- FastAPI runtime skill 경로와 프록시 경로는 정상이다.
+- 현재 우선 점검 대상은 `Google Calendar account` credential 을 n8n UI 에서 재연결하는 것이다.
+- 저장소 workflow 수정만으로는 live SQLite workflow 에 자동 반영되지 않으므로, import 또는 수동 편집 후 다시 활성화해야 한다.
+- 현 시점 사용자 영향 기준 최종 동작은 다음과 같다: approval API는 정상이며, calendar 승인 실행 실패 시 generic 문구 대신 credential 재연결 안내를 반환한다.
+
 ## 로그 경로
 
 - stack launchd 표준 로그: `/tmp/aiassistant-stack.log`

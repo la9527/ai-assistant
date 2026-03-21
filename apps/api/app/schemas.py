@@ -220,6 +220,26 @@ class MailExtractionPayload(BaseModel):
     attachment_urls: list[str] = Field(default_factory=list, alias="attachmentUrls")
 
 
+class BrowserExtractionPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    url: str | None = None
+    query: str | None = None
+    full_page: bool | None = Field(default=None, alias="fullPage")
+    max_results: int | None = Field(default=None, alias="maxResults")
+
+
+class MacOSExtractionPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    reminder_name: str | None = Field(default=None, alias="reminderName")
+    reminder_note: str | None = Field(default=None, alias="reminderNote")
+    reminder_list: str | None = Field(default=None, alias="reminderList")
+    volume_level: int | None = Field(default=None, alias="volumeLevel")
+    finder_path: str | None = Field(default=None, alias="finderPath")
+    toggle_target: str | None = Field(default=None, alias="toggleTarget")
+
+
 class NoteExtractionPayload(BaseModel):
     title: str | None = None
     body: str | None = None
@@ -236,6 +256,7 @@ class StructuredExtraction(BaseModel):
     domain: str
     action: str
     intent: str
+    skill_id: str | None = Field(default=None, alias="skillId")
     confidence: float = Field(default=0.6, ge=0.0, le=1.0)
     needs_clarification: bool = Field(default=False, alias="needsClarification")
     approval_required: bool = Field(default=False, alias="approvalRequired")
@@ -243,6 +264,8 @@ class StructuredExtraction(BaseModel):
     references: list[ExtractionReference] = Field(default_factory=list)
     calendar: CalendarExtractionPayload | None = None
     mail: MailExtractionPayload | None = None
+    browser: BrowserExtractionPayload | None = None
+    macos: MacOSExtractionPayload | None = None
     note: NoteExtractionPayload | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 

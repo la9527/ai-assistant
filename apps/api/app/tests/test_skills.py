@@ -113,6 +113,11 @@ class KeywordMatchingTests(unittest.TestCase):
         skill_ids = [s.skill_id for s, _ in results]
         self.assertIn("web_search", skill_ids)
 
+    def test_browser_search_matches_browser_search(self) -> None:
+        results = match_skills_by_keywords("구글에서 맥미니 MLX 성능 검색해줘")
+        skill_ids = [s.skill_id for s, _ in results]
+        self.assertIn("browser_search", skill_ids)
+
     def test_disabled_skill_not_matched(self) -> None:
         skill = get_skill_by_id("calendar_create")
         skill.enabled = False

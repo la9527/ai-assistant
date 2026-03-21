@@ -143,6 +143,13 @@ flowchart TB
 
 반복 가능한 업무 능력은 개별 기능으로 고정 구현하기보다 스킬 단위로 등록 가능한 구조를 우선한다. 외부 도구 서버는 MCP(Model Context Protocol) 표준 인터페이스로 연결해 내부 스킬과 같은 방식으로 호출한다.
 
+현재 구현은 descriptor-only 단계를 넘어 runtime registry 단계까지 진행됐다.
+
+- `SkillDescriptor` 는 LLM prompt용 catalog 메타데이터와 executor reference를 함께 가진다.
+- `BaseSkill` runtime 구현체가 mail, calendar, browser, macOS, note, search 도메인에 연결되어 있다.
+- LangGraph와 legacy fallback 모두 등록된 runtime skill을 우선 실행하고, approval/validation 응답도 공통 경로에서 생성한다.
+- MCP 도구 서버는 내부 skill과 같은 레지스트리 계층에서 병렬로 관리한다.
+
 ### 7. 브라우저와 로컬 실행을 1급 도구로 취급
 
 브라우저와 macOS 로컬 실행은 부가 기능이 아니라 핵심 실행 도구로 취급해야 한다. 다만 권한, 승인, 감사 로그 정책을 항상 함께 둔다.
@@ -258,6 +265,10 @@ LangGraph에 과도한 영역:
 - 외부 앱별 인증 관리
 
 권장 원칙:
+
+- n8n workflow 는 성공 시 `reply` 를 포함한 JSON body를 항상 반환해야 한다.
+- FastAPI skill runtime 은 `200 OK` 만으로 성공으로 간주하지 않고, body parsing 결과가 비어 있으면 `n8n_fallback` 으로 내린다.
+- 따라서 runtime 전환 검증과 별도로 live workflow의 `Respond to Webhook` 연결과 credential 오류를 운영 체크리스트에 포함해야 한다.
 
 - n8n은 실행 계층으로 사용한다.
 - LangGraph가 직접 각 SaaS API를 다루지 않도록 한다.
@@ -506,6 +517,7 @@ EXTERNAL_LLM_STRUCTURED_EXTRACTION_MODEL=gpt-4o  # 비워두면 EXTERNAL_LLM_MOD
 - MCP 도구도 동일한 SkillDescriptor로 등록해 내부 스킬과 같은 인터페이스로 호출
 
 상세 설계와 구현 로드맵은 [docs/plugin-and-skill-architecture.md](plugin-and-skill-architecture.md)에 정리한다.
+도메인 공통 전환 기준은 [docs/automation-skill-first-architecture.md](automation-skill-first-architecture.md)를, 메일 도메인 상세안은 [docs/mail-skill-first-architecture.md](mail-skill-first-architecture.md)를 참조한다.
 
 ## 카카오 중심 요청 흐름
 

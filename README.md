@@ -122,11 +122,13 @@ Kakao 채널을 추가한다.
 
 - [x] automation.py를 스킬 레지스트리와 도메인별 모듈로 분리
 - [x] SkillDescriptor 기반 의도 분류와 도구 선택 표준화
+- [x] BaseSkill runtime registry 기반 실행 경로 통합
+- [x] mail, calendar, browser, macOS, note, search 도메인 runtime skill 구현
 - [x] 웹 검색 통합 (Tavily API + LLM 요약)
 - [x] Worker 비동기 큐 (Redis LIST 기반 LPUSH/BRPOP)
 - [x] API Key 인증 미들웨어 + slowapi Rate Limiting
-- [ ] MCP(Model Context Protocol) 클라이언트로 외부 도구 서버 연결
-- [ ] macOS 자동화를 MCP 서버로 격리해 독립 배포 가능한 구조로 전환
+- [x] MCP(Model Context Protocol) 클라이언트로 외부 도구 서버 연결
+- [x] macOS 자동화를 MCP 서버로 격리해 독립 배포 가능한 구조로 전환
 - [ ] 설정 파일 기반으로 새 도구 추가 가능한 플러그인 아키텍처 확보
 
 ## 권장 저장소 구조 방향
@@ -158,6 +160,8 @@ Kakao 채널을 추가한다.
 ## 핵심 설계 문서
 
 - [docs/architecture.md](docs/architecture.md)
+- [docs/mail-skill-first-architecture.md](docs/mail-skill-first-architecture.md)
+- [docs/automation-skill-first-architecture.md](docs/automation-skill-first-architecture.md)
 - [docs/plugin-and-skill-architecture.md](docs/plugin-and-skill-architecture.md)
 - [docs/kakao-integration.md](docs/kakao-integration.md)
 - [docs/remote-access.md](docs/remote-access.md)
@@ -171,7 +175,7 @@ Kakao 채널을 추가한다.
 ## 현재 검증된 자동화 범위
 
 - Google Calendar 오늘 일정 요약
-- Google Calendar 일정 생성, 변경, 삭제 승인 실행
+- Google Calendar 일정 생성, 변경, 삭제 승인 요청과 티켓 발급
 - Gmail 최근 메일 요약
 - Gmail 메일 초안 작성과 실제 발송 승인 실행
 - Gmail 회신과 thread 이어쓰기 승인 실행
@@ -180,6 +184,7 @@ Kakao 채널을 추가한다.
 - Cloudflare Tunnel 공개 호스트 `https://ai-assistant-kakao.la9527.cloud` 기준 `GET /assistant/api/health` 검증
 - Cloudflare Tunnel 공개 호스트 기준 `POST /assistant/api/kakao/webhook` 실응답 검증
 - Slack Events API 기준 `url_verification`, app mention, DM, 3초 이내 ACK 후 백그라운드 후속 응답, 승인 버튼 인터랙션 경로 검증
+- 2026-03-22 기준 `GET /assistant/api/health`, `POST /assistant/api/chat`, `POST /assistant/api/kakao/webhook`, `POST /assistant/api/actions/approve` 재검증 완료
 
 ## 현재 추가된 구조화 기반 준비 작업
 
@@ -197,14 +202,16 @@ Kakao 채널을 추가한다.
 - `calendar_delete`, `gmail_reply`, `gmail_thread_reply` 는 recent history와 baseline extraction을 함께 local LLM에 보내 JSON extraction을 먼저 시도하고, 실패 시 기존 parser로 fallback 한다.
 - 현재 기본 운영안은 host MLX server의 `lmstudio-community/LFM2-24B-A2B-MLX-4bit` 단일 모델로 일반 답변과 구조화 추출을 함께 처리하는 방식이다.
 - 현재 MLX structured extraction 대상은 `calendar_create`, `calendar_update`, `calendar_delete`, `gmail_draft`, `gmail_send`, `gmail_reply`, `gmail_thread_reply` 이다.
+- skill-first runtime 경로는 `mail`, `calendar`, `browser`, `macos`, `note`, `search` 도메인에 대해 공통 실행 노드와 공통 validation/approval 처리로 통합했다.
 - 현재 운영 launchd 는 `com.aiassistant.mlx-base-server`, `com.aiassistant.mlx-webui-proxy`, `com.aiassistant.stack` 를 사용하며, 설치와 수동 운영 절차는 [docs/service-operations.md](docs/service-operations.md) 와 [docs/mlx-operations.md](docs/mlx-operations.md) 에 정리했다.
 - Guacamole remote desktop 는 `infra/scripts/start-remote-desktop.sh`, `infra/scripts/stop-remote-desktop.sh`, `infra/scripts/status-remote-desktop.sh` 기준으로 운영한다. 이 스크립트들은 현재 셸에 export 된 `GUACAMOLE_*` 값이 `.env` 설정을 덮어쓰지 않도록 먼저 정리한다.
-- 승인 후 실제 실행 검증 기준으로는 MLX extraction 기반 `calendar_create`, `calendar_delete`, `gmail_draft` 요청이 모두 `route=n8n` 완료 응답까지 확인됐다.
+- 2026-03-22 재검증에서는 일정 생성 승인 후 `route=n8n_fallback` 이 반환됐고, 원인은 API runtime 이 아니라 `assistant-calendar-create` webhook 이 `200 OK` 와 빈 body 를 반환하는 운영 문제로 확인됐다.
 
 ## 현재 보류 사항
 
 - Kakao 운영 채널은 callback 가이드 기준 초기 ACK 형식까지 반영했지만, 실제 운영 호출에서 `callbackUrl` 이 누락되는 경우와 `1002` 오류가 반복되어 우선 보류한다.
 - Slack 실제 워크스페이스 검증과 운영 채널 전환을 다음 우선순위로 진행한다.
+- n8n calendar/gmail workflow 는 활성화 상태지만 일부 webhook 이 빈 JSON body 없이 200만 반환할 수 있어, runtime 코드 검증과 별도로 workflow 응답 규약 점검이 필요하다.
 
 ## 현재 접근 경로
 

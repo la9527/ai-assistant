@@ -48,6 +48,7 @@
       "name": "Create Calendar Event",
       "type": "n8n-nodes-base.googleCalendar",
       "typeVersion": 1.3,
+      "continueOnFail": true,
       "position": [820, 260],
       "credentials": {
         "googleCalendarOAuth2Api": {
@@ -58,13 +59,54 @@
     },
     {
       "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "create-error-check",
+              "leftValue": "={{ $json.error }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "create-failed-if-node",
+      "name": "Create Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1080, 260]
+    },
+    {
+      "parameters": {
         "jsCode": "const event = $json;\nconst formatTime = (value) => new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value));\nconst title = event.summary || '제목 없는 일정';\nconst start = event.start?.dateTime ? formatTime(event.start.dateTime) : (event.start?.date || '날짜 미확인');\nconst end = event.end?.dateTime ? formatTime(event.end.dateTime) : '';\nreturn [{ json: { reply: end ? `${start}부터 ${end}까지 ${title} 일정을 생성했습니다.` : `${start} ${title} 일정을 생성했습니다.`, action: 'calendar-create', event_id: event.id || '' } }];"
       },
       "id": "create-summary-node",
       "name": "Summarize Created Event",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1080, 260]
+      "position": [1340, 180]
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $json ?? {};\nconst rawError = payload.error?.message ?? payload.error ?? payload.message ?? payload.description ?? payload.cause?.message ?? payload.metadata?.error?.message ?? '';\nconst message = String(rawError || 'Google Calendar workflow execution failed');\nconst needsReconnect = /(authorization grant|refresh token|oauth|invalid credentials|unauthorized|forbidden|revoked|expired)/i.test(message);\nconst reply = needsReconnect\n  ? 'Google Calendar 연결이 만료되었거나 권한이 끊어져 일정 생성을 완료하지 못했습니다. n8n의 Google Calendar account credential을 다시 연결해 주세요.'\n  : `일정 생성 실행 중 오류가 발생했습니다. ${message}`;\nreturn [{ json: { reply, action: 'calendar-create-error', error: message, needs_reconnect: needsReconnect } }];"
+      },
+      "id": "create-error-reply-node",
+      "name": "Build Calendar Create Error Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 420]
     },
     {
       "parameters": {
@@ -82,11 +124,20 @@
   "connections": {
     "Webhook": { "main": [[{ "node": "Normalize Create Request", "type": "main", "index": 0 }]] },
     "Normalize Create Request": { "main": [[{ "node": "Create Calendar Event", "type": "main", "index": 0 }]] },
-    "Create Calendar Event": { "main": [[{ "node": "Summarize Created Event", "type": "main", "index": 0 }]] },
-    "Summarize Created Event": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] }
+    "Create Calendar Event": {
+      "main": [[{ "node": "Create Failed?", "type": "main", "index": 0 }]]
+    },
+    "Create Failed?": {
+      "main": [
+        [{ "node": "Build Calendar Create Error Reply", "type": "main", "index": 0 }],
+        [{ "node": "Summarize Created Event", "type": "main", "index": 0 }]
+      ]
+    },
+    "Summarize Created Event": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] },
+    "Build Calendar Create Error Reply": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] }
   },
   "settings": {},
   "pinData": {},
-  "versionId": "calendar-create-live-001",
+  "versionId": "calendar-create-live-004",
   "tags": []
 }
