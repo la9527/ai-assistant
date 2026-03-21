@@ -28,6 +28,8 @@
 
 현재 24시간 운영 기준으로는 MLX 런타임은 LaunchDaemon 전환이 가능하지만, Docker Compose core stack은 Docker Desktop 의존 때문에 여전히 로그인 세션 기반 LaunchAgent 성격이 남아 있다. 자세한 운영 절차는 [docs/service-operations.md](docs/service-operations.md)에 정리한다.
 
+대용량 데이터 저장 기본 경로는 `/Volumes/ExtData/ai-assistant` 기준으로 맞춘다. Open WebUI, n8n, PostgreSQL, Redis, Caddy, Guacamole 데이터와 MLX/Hugging Face 계열 모델 캐시는 가능하면 이 경로 아래로 모은다.
+
 ## 상위 수준 기술 스택
 
 - 로컬 LLM 런타임: Ollama 또는 LM Studio
@@ -41,6 +43,13 @@
 - 웹 검색: Tavily API (선택적 브라우저 기반 Google 검색 fallback)
 - 비동기 작업 큐: Redis LIST 기반 Worker
 - API 보안: API Key 인증 + slowapi Rate Limiting
+
+## 대용량 저장소 기준
+
+- Docker 영속 데이터 기본 루트: `/Volumes/ExtData/ai-assistant/docker`
+- MLX/Hugging Face 캐시 기본 루트: `/Volumes/ExtData/ai-assistant/mlx`
+- 현재 기준 마이그레이션 스크립트: [infra/scripts/migrate-extdata-storage.sh](infra/scripts/migrate-extdata-storage.sh)
+- stack 시작 스크립트는 위 경로가 없으면 자동으로 생성한다.
 
 ## 단계별 구현 계획
 

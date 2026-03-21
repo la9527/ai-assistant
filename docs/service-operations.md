@@ -25,6 +25,8 @@ Docker Compose core stack에는 기본적으로 아래 서비스가 포함된다
 - `webui`
 - `proxy`
 
+대용량 영속 데이터는 기본적으로 `/Volumes/ExtData/ai-assistant` 아래 bind mount 로 저장한다. 현재 기준으로 Open WebUI, n8n, PostgreSQL, Redis, Caddy, Guacamole 데이터와 MLX/Hugging Face 캐시를 이 경로 아래로 모은다.
+
 ## 관련 파일
 
 - launchd 설치 스크립트: [infra/scripts/install-launchd-services.sh](infra/scripts/install-launchd-services.sh)
@@ -48,6 +50,12 @@ Docker Compose core stack에는 기본적으로 아래 서비스가 포함된다
 
 ```bash
 infra/scripts/install-launchd-services.sh
+```
+
+외부 SSD로 기존 데이터를 옮길 때는 설치 전에 아래 스크립트를 1회 실행한다.
+
+```bash
+infra/scripts/migrate-extdata-storage.sh
 ```
 
 이 스크립트는 아래 작업을 수행한다.
@@ -121,6 +129,8 @@ sudo infra/scripts/install-launchd-daemons.sh
 ```bash
 infra/scripts/start-assistant-stack.sh
 ```
+
+이 스크립트는 `/Volumes/ExtData/ai-assistant` 아래 필요한 bind mount 디렉토리를 자동으로 생성한다.
 
 특정 서비스만 시작할 수도 있다.
 

@@ -132,6 +132,13 @@ flowchart TB
 - message history: 사용자 원문, assistant 응답, route, 구조화 extraction 결과, 승인 관련 메타데이터 저장
 - session state: 마지막 intent, 마지막 route, pending action, pending ticket, 최근 extraction, 후보 목록, 보조 상태 저장
 
+### 5-1. 대용량 데이터는 외부 SSD로 분리한다
+
+- 모델 캐시, Docker 영속 데이터, 운영 중 커지는 상태 파일은 가능하면 시스템 디스크가 아니라 외부 SSD로 분리한다.
+- 현재 기본 저장 루트는 `/Volumes/ExtData/ai-assistant` 이다.
+- Docker Compose 서비스 데이터는 bind mount 로 이 경로 아래에 두고, MLX/Hugging Face 캐시는 `/Volumes/ExtData/ai-assistant/mlx` 기준으로 맞춘다.
+- 이 구조의 목적은 macOS 시스템 디스크 압박을 줄이고, 모델/워크플로/DB 데이터를 한 경로에서 백업 가능하게 만드는 것이다.
+
 ### 6. 하드코딩보다 스킬 중심 확장
 
 반복 가능한 업무 능력은 개별 기능으로 고정 구현하기보다 스킬 단위로 등록 가능한 구조를 우선한다. 외부 도구 서버는 MCP(Model Context Protocol) 표준 인터페이스로 연결해 내부 스킬과 같은 방식으로 호출한다.

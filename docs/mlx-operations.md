@@ -15,6 +15,8 @@
 - launchd label: base chat=`com.aiassistant.mlx-base-server`
 - WebUI proxy launchd label: `com.aiassistant.mlx-webui-proxy`
 
+모델 및 캐시 저장 기본 경로는 `/Volumes/ExtData/ai-assistant/mlx` 로 둔다. `start-mlx-base-server.sh` 는 기본적으로 `HF_HOME`, `HUGGINGFACE_HUB_CACHE`, `TRANSFORMERS_CACHE`, `LMSTUDIO_HOME` 을 이 경로 아래로 맞춘다.
+
 ## 관련 파일
 
 - base launchd plist: [infra/launchd/com.aiassistant.mlx-base-server.plist](infra/launchd/com.aiassistant.mlx-base-server.plist)
@@ -33,6 +35,8 @@
 - `LOCAL_LLM_PREWARM_ENABLED=true`
 - `LOCAL_LLM_STRUCTURED_EXTRACTION_BASE_URL=http://host.docker.internal:1235/v1`
 - `LOCAL_LLM_STRUCTURED_EXTRACTION_MODEL=lmstudio-community/LFM2-24B-A2B-MLX-4bit`
+- `AI_STORAGE_ROOT=/Volumes/ExtData/ai-assistant`
+- `MLX_CACHE_ROOT=/Volumes/ExtData/ai-assistant/mlx`
 - Open WebUI compose env는 `ENABLE_OPENAI_API=true`, `OPENAI_API_BASE_URLS=http://host.docker.internal:1236/v1`, `ENABLE_OLLAMA_API=false` 기준으로 둔다.
 
 ## 기본 상태 확인
@@ -108,6 +112,12 @@ LaunchDaemon 전환 스크립트를 이미 적용한 상태라면, 위 `launchct
 
 ```bash
 docker compose -f infra/docker/docker-compose.yml up -d --build api
+```
+
+3. 대용량 캐시/스토리지 이전 1회 수행
+
+```bash
+infra/scripts/migrate-extdata-storage.sh
 ```
 
 ## 운영 메모

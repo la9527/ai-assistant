@@ -5,8 +5,8 @@ services:
       - "80:80"
     volumes:
       - ../caddy/Caddyfile:/etc/caddy/Caddyfile
-      - caddy_data:/data
-      - caddy_config:/config
+      - ${AI_STORAGE_ROOT:-/Volumes/ExtData/ai-assistant}/docker/caddy/data:/data
+      - ${AI_STORAGE_ROOT:-/Volumes/ExtData/ai-assistant}/docker/caddy/config:/config
     depends_on:
       - api
       - webui
@@ -33,7 +33,7 @@ services:
       OPENAI_API_KEYS: "${API_KEY:-}"
       ENABLE_OLLAMA_API: "false"
     volumes:
-      - openwebui_data:/app/backend/data
+      - ${AI_STORAGE_ROOT:-/Volumes/ExtData/ai-assistant}/docker/openwebui:/app/backend/data
     depends_on:
       - api
     extra_hosts:
@@ -106,7 +106,7 @@ services:
       GUACAMOLE_VNC_ENABLE_AUDIO: ${GUACAMOLE_VNC_ENABLE_AUDIO:-false}
       GUACAMOLE_VNC_ENCODINGS: ${GUACAMOLE_VNC_ENCODINGS:-}
     volumes:
-      - guacamole_home:/config
+      - ${AI_STORAGE_ROOT:-/Volumes/ExtData/ai-assistant}/docker/guacamole:/config
       - ../scripts/render-guacamole-user-mapping.sh:/scripts/render-guacamole-user-mapping.sh:ro
     profiles:
       - remote-desktop
@@ -118,7 +118,7 @@ services:
       WEBAPP_CONTEXT: guacamole
       REMOTE_IP_VALVE_ENABLED: "true"
     volumes:
-      - guacamole_home:/etc/guacamole
+      - ${AI_STORAGE_ROOT:-/Volumes/ExtData/ai-assistant}/docker/guacamole:/etc/guacamole
     depends_on:
       guacd:
         condition: service_started
@@ -144,7 +144,7 @@ services:
       N8N_PORT: ${N8N_PORT:-5678}
       N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
     volumes:
-      - n8n_data:/home/node/.n8n
+      - ${AI_STORAGE_ROOT:-/Volumes/ExtData/ai-assistant}/docker/n8n:/home/node/.n8n
     depends_on:
       - postgres
 
@@ -155,19 +155,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-app}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ${AI_STORAGE_ROOT:-/Volumes/ExtData/ai-assistant}/docker/postgres:/var/lib/postgresql/data
 
   redis:
     image: redis:8.2.1
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
-      - redis_data:/data
-
-volumes:
-  caddy_data:
-  caddy_config:
-  openwebui_data:
-  n8n_data:
-  postgres_data:
-  redis_data:
-  guacamole_home:
+      - ${AI_STORAGE_ROOT:-/Volumes/ExtData/ai-assistant}/docker/redis:/data
