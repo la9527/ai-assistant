@@ -738,8 +738,8 @@ class GmailSummaryFormatTests(unittest.TestCase):
 
         result = _format_gmail_items_markdown(self.SAMPLE_ITEMS)
         # Markdown 굵게 표시
-        self.assertIn("**1. 회의 안건**", result)
-        self.assertIn("**2. 보고서 검토 요청**", result)
+        self.assertIn("**1) 회의 안건**", result)
+        self.assertIn("**2) 보고서 검토 요청**", result)
         # 보낸 사람
         self.assertIn("alice@example.com", result)
         self.assertIn("bob@example.com", result)
@@ -761,7 +761,7 @@ class GmailSummaryFormatTests(unittest.TestCase):
         body = {"reply": "원본", "items": self.SAMPLE_ITEMS}
         result = format_gmail_summary(body, "webui")
         # 외부 LLM 미설정 시 Markdown 템플릿 사용
-        self.assertIn("**1. 회의 안건**", result)
+        self.assertIn("**1) 회의 안건**", result)
 
     def test_format_gmail_summary_kakao_uses_compact(self) -> None:
         from app.llm import format_gmail_summary
@@ -792,9 +792,9 @@ class GmailSummaryFormatTests(unittest.TestCase):
         old_reply = "최근 메일 요약입니다. 1. alice@example.com - 회의 안건 / 2. bob@test.io - 보고서 확인"
         body = {"reply": old_reply}
         result = format_gmail_summary(body, "webui")
-        self.assertIn("**1. 회의 안건**", result)
+        self.assertIn("**1) 회의 안건**", result)
         self.assertIn("alice@example.com", result)
-        self.assertIn("**2. 보고서 확인**", result)
+        self.assertIn("**2) 보고서 확인**", result)
 
     def test_parse_reply_fallback_newline_separated(self) -> None:
         """줄바꿈 구분 reply → items 파싱."""
@@ -812,6 +812,55 @@ class GmailSummaryFormatTests(unittest.TestCase):
         body = {"reply": "메일 없음 알림"}
         result = format_gmail_summary(body, "webui")
         self.assertEqual(result, "메일 없음 알림")
+
+
+class GmailDetailFormatTests(unittest.TestCase):
+    def test_format_gmail_detail_webui_uses_safe_lines(self) -> None:
+        from app.llm import format_gmail_detail
+
+        body = {
+            "subject": "[조치 필요] 결제 설정 확인",
+            "sender": '"Google AI Studio" <googleaistudio-noreply@google.com>',
+            "date": "Fri, 21 Mar 2026 09:00:00 +0900",
+            "to": "la9527@daum.net",
+            "messageId": "msg-123",
+            "threadId": "thread-123",
+            "snippet": "결제 정보를 확인해 주세요.",
+            "body": "본문 확인이 필요합니다.",
+        }
+
+        result = format_gmail_detail(body, "webui")
+
+        self.assertIn("📩 **메일 상세 정보**", result)
+        self.assertIn("**제목**: (조치 필요) 결제 설정 확인", result)
+        self.assertIn("보낸 사람:", result)
+        self.assertIn("받는 사람: la9527@daum.net", result)
+        self.assertIn("**본문**", result)
+        self.assertNotIn("- 제목:", result)
+
+    def test_format_gmail_detail_parses_legacy_reply(self) -> None:
+        from app.llm import format_gmail_detail
+
+        body = {
+            "reply": (
+                "📩 메일 상세 정보\n"
+                "- 제목: [Action needed] Complete your billing setup\n"
+                "- 보낸 사람: Google AI Studio <googleaistudio-noreply@google.com>\n"
+                "- 받는 사람: la9527@daum.net\n"
+                "- 메시지 ID: msg-456\n"
+                "- 스레드 ID: thread-456\n"
+                "- 미리보기: Billing setup required\n"
+                "\n"
+                "본문:\n"
+                "Please complete your billing setup."
+            )
+        }
+
+        result = format_gmail_detail(body, "webui")
+
+        self.assertIn("**제목**: (Action needed) Complete your billing setup", result)
+        self.assertIn("받는 사람: la9527@daum.net", result)
+        self.assertIn("Please complete your billing setup.", result)
 
 
 class RunN8nAutomationRawTests(unittest.TestCase):
@@ -933,11 +982,11 @@ class GmailCandidateExtractionTests(unittest.TestCase):
     def test_markdown_bold_numbered_items(self) -> None:
         reply = (
             "📬 **최근 메일 요약**\n\n"
-            "**1. 프로젝트 승인**\n"
-            "   - 📤 보낸 사람: boss@company.com\n"
-            "   - 🕐 날짜: 2026-03-20\n\n"
-            "**2. 주간 보고**\n"
-            "   - 📤 보낸 사람: team@company.com\n"
+            "**1) 프로젝트 승인**\n"
+            "보낸 사람: boss@company.com\n"
+            "날짜: 2026-03-20\n\n"
+            "**2) 주간 보고**\n"
+            "보낸 사람: team@company.com\n"
         )
         result = extract_candidates_from_reply(reply, "n8n")
 

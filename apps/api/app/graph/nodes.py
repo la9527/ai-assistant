@@ -25,7 +25,7 @@ from app.automation import (
 )
 from app.config import settings
 from app.graph.state import AssistantState
-from app.llm import format_gmail_summary, generate_external_reply, generate_local_reply
+from app.llm import format_gmail_detail, format_gmail_summary, generate_external_reply, generate_local_reply
 
 
 def _build_mail_result_context(raw_body: dict, items: list[dict], *, mode: str, selected_item: dict | None = None) -> dict:
@@ -403,7 +403,7 @@ def execute_gmail_detail(state: AssistantState) -> dict:
         parsed,
     )
     if raw_body is not None:
-        reply = raw_body.get("reply") if isinstance(raw_body.get("reply"), str) else "메일 상세 정보를 조회했습니다."
+        reply = format_gmail_detail(raw_body, channel)
         selected_item = {
             "messageId": raw_body.get("messageId") or raw_body.get("message_id"),
             "threadId": raw_body.get("threadId") or raw_body.get("thread_id"),

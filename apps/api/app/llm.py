@@ -244,25 +244,91 @@ def generate_local_reply(
 # Gmail summary formatting helpers
 # ---------------------------------------------------------------------------
 
+def _escape_mail_markdown(text: str) -> str:
+    # Open WebUI treats \[ ... \] as KaTeX, so avoid escaping brackets.
+    return re.sub(r"([\\`*_{}#!|])", r"\\\1", text)
+
+
+def _clean_mail_text(value: object, fallback: str, *, collapse_whitespace: bool = True) -> str:
+    text = str(value or "").strip()
+    if not text:
+        text = fallback
+    text = re.sub(r"^[-*•]\s*", "", text)
+    text = re.sub(r"^\*\*(.*?)\*\*$", r"\1", text)
+    text = re.sub(r"^\d+[.)]\s*", "", text)
+    text = re.sub(r"^\[(.+?)\]\s*", r"(\1) ", text)
+    if collapse_whitespace:
+        text = re.sub(r"\s+", " ", text).strip()
+    return _escape_mail_markdown(text)
+
+
+def _extract_gmail_detail_fields(raw_body: dict) -> dict[str, str]:
+    detail = {
+        "subject": _clean_mail_text(raw_body.get("subject"), "", collapse_whitespace=True),
+        "sender": _clean_mail_text(raw_body.get("sender"), "", collapse_whitespace=True),
+        "to": _clean_mail_text(raw_body.get("to"), "", collapse_whitespace=True),
+        "date": _clean_mail_text(raw_body.get("date"), "", collapse_whitespace=True),
+        "snippet": _clean_mail_text(raw_body.get("snippet"), "", collapse_whitespace=True),
+        "body": _clean_mail_text(raw_body.get("body") or raw_body.get("bodyText") or raw_body.get("plainBody"), "", collapse_whitespace=True),
+        "message_id": _clean_mail_text(raw_body.get("messageId") or raw_body.get("message_id"), "", collapse_whitespace=True),
+        "thread_id": _clean_mail_text(raw_body.get("threadId") or raw_body.get("thread_id"), "", collapse_whitespace=True),
+    }
+
+    reply = raw_body.get("reply")
+    if not isinstance(reply, str) or not reply.strip():
+        return detail
+
+    lines = [line.rstrip() for line in reply.splitlines()]
+    body_start = None
+    field_patterns = {
+        "subject": "제목:",
+        "sender": "보낸 사람:",
+        "to": "받는 사람:",
+        "date": "날짜:",
+        "message_id": "메시지 ID:",
+        "thread_id": "스레드 ID:",
+        "snippet": "미리보기:",
+    }
+
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        normalized = re.sub(r"^[-*•]\s*", "", stripped)
+        if normalized == "본문:":
+            body_start = index + 1
+            continue
+        for key, prefix in field_patterns.items():
+            if normalized.startswith(prefix) and not detail[key]:
+                value = normalized[len(prefix):].strip()
+                detail[key] = _clean_mail_text(value, "", collapse_whitespace=True)
+                break
+
+    if body_start is not None and not detail["body"]:
+        body_lines = [line.strip() for line in lines[body_start:] if line.strip()]
+        detail["body"] = _clean_mail_text("\n".join(body_lines), "", collapse_whitespace=True)
+
+    return detail
+
 def _format_gmail_items_markdown(items: list[dict]) -> str:
-    """메일 아이템 목록을 Markdown 테이블 형식으로 포맷한다."""
+    """메일 아이템 목록을 WebUI 친화적인 Markdown으로 포맷한다."""
     if not items:
         return "최근 7일 이내 받은편지함 메일이 없습니다."
 
     lines = ["📬 **최근 메일 요약**", ""]
-    for item in items:
-        idx = item.get("index", "")
-        sender = item.get("sender", "발신자 미상")
-        subject = item.get("subject", "제목 없음")
-        snippet = item.get("snippet", "")
-        date = item.get("date", "")
+    for position, item in enumerate(items, start=1):
+        idx = item.get("index") or position
+        sender = _clean_mail_text(item.get("sender"), "발신자 미상")
+        subject = _clean_mail_text(item.get("subject"), "제목 없음")
+        snippet = _clean_mail_text(item.get("snippet"), "")
+        date = _clean_mail_text(item.get("date"), "")
 
-        lines.append(f"**{idx}. {subject}**")
-        lines.append(f"   - 📤 보낸 사람: {sender}")
+        lines.append(f"**{idx}) {subject}**")
+        lines.append(f"보낸 사람: {sender}")
         if date:
-            lines.append(f"   - 🕐 날짜: {date}")
+            lines.append(f"날짜: {date}")
         if snippet:
-            lines.append(f"   - 💬 미리보기: {snippet}")
+            lines.append(f"미리보기: {snippet}")
         lines.append("")
 
     return "\n".join(lines)
@@ -278,6 +344,46 @@ def _format_gmail_items_compact(items: list[dict], reply: str) -> str:
         sender = item.get("sender", "발신자 미상")
         subject = item.get("subject", "제목 없음")
         lines.append(f"{idx}. {sender} - {subject}")
+    return "\n".join(lines)
+
+
+def _format_gmail_detail_markdown(detail: dict[str, str]) -> str:
+    lines = ["📩 **메일 상세 정보**", ""]
+
+    subject = detail.get("subject") or "(제목 없음)"
+    sender = detail.get("sender") or "발신자 미상"
+    lines.append(f"**제목**: {subject}")
+    lines.append(f"보낸 사람: {sender}")
+
+    if detail.get("date"):
+        lines.append(f"날짜: {detail['date']}")
+    if detail.get("to"):
+        lines.append(f"받는 사람: {detail['to']}")
+    if detail.get("message_id"):
+        lines.append(f"메시지 ID: {detail['message_id']}")
+    if detail.get("thread_id"):
+        lines.append(f"스레드 ID: {detail['thread_id']}")
+    if detail.get("snippet"):
+        lines.append(f"미리보기: {detail['snippet']}")
+    if detail.get("body"):
+        lines.extend(["", "**본문**", detail["body"]])
+
+    return "\n".join(lines)
+
+
+def _format_gmail_detail_compact(detail: dict[str, str], reply: str) -> str:
+    if reply:
+        return reply
+
+    lines = ["메일 상세 정보입니다."]
+    if detail.get("subject"):
+        lines.append(f"제목: {detail['subject']}")
+    if detail.get("sender"):
+        lines.append(f"보낸 사람: {detail['sender']}")
+    if detail.get("date"):
+        lines.append(f"날짜: {detail['date']}")
+    if detail.get("snippet"):
+        lines.append(f"미리보기: {detail['snippet']}")
     return "\n".join(lines)
 
 
@@ -339,15 +445,26 @@ def format_gmail_summary(
     if not items:
         return reply or "최근 7일 이내 받은편지함 메일이 없습니다."
 
-    # WebUI 채널: 외부 LLM 포맷 → Markdown 템플릿 → 기본 텍스트 순으로 시도
+    # WebUI 채널: 항상 deterministic Markdown 포맷을 사용해 가독성을 유지한다.
     if channel in ("webui", "web", "api"):
-        llm_formatted = format_gmail_summary_with_llm(items, channel)
-        if llm_formatted:
-            return llm_formatted
         return _format_gmail_items_markdown(items)
 
     # Kakao 등 기타 채널: 간결한 텍스트
     return _format_gmail_items_compact(items, reply)
+
+
+def format_gmail_detail(
+    raw_body: dict,
+    channel: str,
+) -> str:
+    reply = raw_body.get("reply", "")
+    if raw_body.get("found") is False:
+        return reply or "요청한 조건에 맞는 메일을 찾지 못했습니다."
+
+    detail = _extract_gmail_detail_fields(raw_body)
+    if channel in ("webui", "web", "api"):
+        return _format_gmail_detail_markdown(detail)
+    return _format_gmail_detail_compact(detail, reply)
 
 
 def _parse_reply_to_items(reply: str) -> list[dict]:

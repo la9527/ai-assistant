@@ -6,6 +6,8 @@ from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from app.config import settings
+from app.llm import format_gmail_detail
+from app.llm import format_gmail_summary
 from app.llm import generate_structured_extraction
 from app.llm import generate_local_reply
 from app.schemas import CalendarExtractionPayload
@@ -372,6 +374,19 @@ def _extract_group_by_date(message: str) -> bool | None:
     if "그룹" in lowered and "날짜" in message:
         return True
     return None
+
+
+def _build_mail_result_context(raw_body: dict, items: list[dict], *, mode: str, selected_item: dict | None = None) -> dict:
+    return {
+        "mode": mode,
+        "query": raw_body.get("query") or raw_body.get("searchQuery") or "",
+        "items": items,
+        "hasMore": bool(raw_body.get("hasMore")),
+        "nextCursor": raw_body.get("nextCursor"),
+        "groupByDate": bool(raw_body.get("groupByDate")),
+        "selectedMessageId": (selected_item or {}).get("messageId") or (selected_item or {}).get("message_id"),
+        "selectedThreadId": (selected_item or {}).get("threadId") or (selected_item or {}).get("thread_id"),
+    }
 GMAIL_REPLY_BODY_SUFFIX_PATTERNS = (
     re.compile(r"\s*메일에\s*(?:이어서\s*)?답장해\s*줘\s*$"),
     re.compile(r"\s*메일에\s*회신해\s*줘\s*$"),
@@ -1392,9 +1407,37 @@ def _process_message_legacy(
                 extra["groupByDate"] = "true" if extraction.mail.group_by_date else "false"
             if extra:
                 extra_payload = extra
-        reply = run_n8n_automation(message, channel, session_id, user_id, settings.n8n_gmail_webhook_path, extra_payload)
-        if reply is not None:
-            return {"reply": reply, "route": "n8n", "action_type": None}
+        raw_body = run_n8n_automation_raw(
+            message,
+            channel,
+            session_id,
+            user_id,
+            settings.n8n_gmail_webhook_path,
+            extra_payload,
+        )
+        if raw_body is not None:
+            reply = format_gmail_summary(raw_body, channel)
+            items = raw_body.get("items") or []
+            candidates = [
+                {
+                    "index": i,
+                    "label": item.get("subject", ""),
+                    "raw": f"{item.get('sender', '')} - {item.get('subject', '')}",
+                    "sender": item.get("sender", ""),
+                    "snippet": item.get("snippet", ""),
+                    "date": item.get("date", ""),
+                    "message_id": item.get("messageId") or item.get("message_id") or item.get("id", ""),
+                    "thread_id": item.get("threadId") or item.get("thread_id") or "",
+                }
+                for i, item in enumerate(items)
+            ] if len(items) >= 2 else []
+            return {
+                "reply": reply,
+                "route": "n8n",
+                "action_type": None,
+                "last_candidates": candidates or None,
+                "mail_result_context": _build_mail_result_context(raw_body, items, mode="list"),
+            }
         return {
             "reply": "Gmail 목록 조회를 실행하지 못했습니다. n8n Gmail credential 연결 상태를 확인하세요.",
             "route": "n8n_fallback",
@@ -1417,8 +1460,17 @@ def _process_message_legacy(
             settings.n8n_gmail_detail_webhook_path,
             parsed,
         )
-        if raw_body is not None and isinstance(raw_body.get("reply"), str):
-            return {"reply": raw_body["reply"], "route": "n8n", "action_type": None}
+        if raw_body is not None:
+            selected_item = {
+                "messageId": raw_body.get("messageId") or raw_body.get("message_id"),
+                "threadId": raw_body.get("threadId") or raw_body.get("thread_id"),
+            }
+            return {
+                "reply": format_gmail_detail(raw_body, channel),
+                "route": "n8n",
+                "action_type": None,
+                "mail_result_context": _build_mail_result_context(raw_body, [], mode="detail", selected_item=selected_item),
+            }
         return {
             "reply": "Gmail 상세 조회를 실행하지 못했습니다. n8n Gmail detail workflow 또는 credential 연결 상태를 확인하세요.",
             "route": "n8n_fallback",
