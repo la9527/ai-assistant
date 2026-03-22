@@ -254,6 +254,8 @@ curl -sS http://127.0.0.1/assistant/api/health
 - 같은 날 후속 점검에서는 credential 문제와 별개로 ExtData 기반 n8n 저장소가 `Error while saving insights metadata and raw data`, `SQLITE_NOTADB`, `SQLITE_IOERR` 를 일으켜 direct webhook 자체가 500으로 무너지는 상태도 확인됐다.
 - 이 경우 compose 설정 경로는 이미 `/Volumes/ExtData/ai-assistant/docker/n8n` 으로 맞았지만, SQLite reset 뒤에도 첫 write webhook 에서 `SQLITE_IOERR` 가 재발했다.
 - 그래서 현재 기준 근본 복구 절차는 n8n 메타데이터 DB를 PostgreSQL로 전환하고, ExtData의 `.n8n` 디렉터리는 파일성 상태만 유지하는 것이다.
+- 이후 Gmail credential 재연결 뒤에는 `assistant-gmail-summary`, `assistant-gmail-detail`, `assistant-gmail-draft`, `assistant-gmail-send`, `assistant-gmail-reply` workflow 를 새 credential ID 기준으로 다시 import/publish 해야 정상 실행되는 것도 확인했다.
+- 2026-03-22 최종 재검증에서는 direct webhook 과 API approval 경로 기준으로 Gmail summary, detail, draft, send, reply 가 모두 `route=n8n` 또는 해당 direct 성공 응답으로 복구됐다.
 
 운영 해석:
 
@@ -261,6 +263,7 @@ curl -sS http://127.0.0.1/assistant/api/health
 - 현재 우선 복구 대상은 ExtData 기반 n8n SQLite 의존을 제거하고 PostgreSQL 기반으로 재기동하는 것이다.
 - 저장소 재초기화 후에는 `Google Calendar account` 와 Gmail credential 을 n8n UI 에서 다시 연결해야 한다.
 - 저장소 workflow 수정만으로는 live SQLite workflow 에 자동 반영되지 않으므로, import 또는 수동 편집 후 다시 활성화해야 한다.
+- Gmail credential 을 다시 만들면 이름이 같아도 내부 ID는 바뀌므로, workflow credential reference 재반영이 필요하다.
 - 현 시점 사용자 영향 기준 최종 동작은 다음과 같다: approval API는 정상이며, n8n DB가 PostgreSQL로 올라오기 전까지는 calendar 승인 실행이 direct webhook 500 또는 fallback 안내로 끝날 수 있다.
 
 ## 로그 경로

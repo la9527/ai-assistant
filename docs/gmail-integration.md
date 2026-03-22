@@ -231,3 +231,13 @@
 - 승인 후에는 초안 작성 또는 실제 발송 완료 문구가 반환되어야 한다.
 - `POST /assistant/api/chat` 에서 메일 회신 또는 thread 이어쓰기 요청도 먼저 `route=approval_required` 로 처리되어야 한다.
 - 승인 후에는 회신 실행 완료 문구가 반환되어야 한다.
+
+## 2026-03-22 실검증 메모
+
+- direct webhook 기준 `assistant-gmail-summary` 는 최근 메일 3건 조회에 성공했다.
+- direct webhook 기준 `assistant-gmail-detail` 는 `messageId=19d12c96afa467cb` 상세 조회에 성공했다.
+- direct webhook 기준 `assistant-gmail-draft` 는 검증 초안 생성에 성공했고 `draft_id=r5742016866116249222` 를 반환했다.
+- direct webhook 기준 `assistant-gmail-send` 는 `la9527@daum.net` 대상 검증 메일 발송에 성공했고 `message_id=19d12d52dffbc372` 를 반환했다.
+- direct webhook 기준 `assistant-gmail-reply` 는 `thread_id=19d12ad0daeb94ee`, `message_id=19d12c96afa467cb` 대상 회신에 성공했고 `message_id=19d12d53267aec97` 를 반환했다.
+- API 경로에서도 `최근 메일 3개 요약해줘`, `방금 조회한 보안 알림 메일 자세히 보여줘` 요청이 모두 `route=n8n` 으로 성공했다.
+- API approval 경로에서도 Gmail draft, send, reply 가 모두 승인 후 정상 실행됐다.

@@ -7,6 +7,7 @@ import re
 import secrets
 import time
 import uuid
+from contextlib import asynccontextmanager
 from urllib.parse import parse_qs
 
 from sqlalchemy import text
@@ -93,10 +94,27 @@ from app.schemas import UserMemoryCreateRequest
 from app.schemas import UserMemoryResponse
 from app.schemas import UserMemoryUpdateRequest
 
-
-app = FastAPI(title="AI Assistant API", version="0.1.0")
-
 logger = logging.getLogger("uvicorn.error")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    Base.metadata.create_all(bind=engine)
+    if _admin_auth_enabled() and not settings.admin_session_secret:
+        logger.warning("ADMIN_SESSION_SECRET is not set; using an ephemeral in-memory secret for admin sessions")
+    warm_local_llm()
+    if settings.mcp_servers:
+        from app.mcp.client import MCPServerConfig
+
+        configs = [MCPServerConfig(**s) for s in settings.mcp_servers]
+        try:
+            await _init_mcp(configs)
+        except Exception:
+            logger.warning("MCP 서버 초기화를 건너뜁니다 — 비동기 초기화 실패")
+    yield
+
+
+app = FastAPI(title="AI Assistant API", version="0.1.0", lifespan=lifespan)
 
 # ---------------------------------------------------------------------------
 # Rate Limiting (slowapi)
@@ -1117,28 +1135,6 @@ def _process_kakao_callback(
         _post_kakao_callback(callback_url, response)
     except Exception:
         logger.exception("Failed to deliver Kakao callback response")
-
-
-@app.on_event("startup")
-def startup() -> None:
-    Base.metadata.create_all(bind=engine)
-    if _admin_auth_enabled() and not settings.admin_session_secret:
-        logger.warning("ADMIN_SESSION_SECRET is not set; using an ephemeral in-memory secret for admin sessions")
-    warm_local_llm()
-    # MCP 서버 비동기 초기화
-    if settings.mcp_servers:
-        import asyncio
-        from app.mcp.client import MCPServerConfig, initialize_mcp_servers
-        from app.mcp.registry import register_mcp_tools
-        configs = [MCPServerConfig(**s) for s in settings.mcp_servers]
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.create_task(_init_mcp(configs))
-            else:
-                loop.run_until_complete(_init_mcp(configs))
-        except Exception:
-            logger.warning("MCP 서버 초기화를 건너뜁니다 — 비동기 루프 없음")
 
 
 async def _init_mcp(configs: list) -> None:
