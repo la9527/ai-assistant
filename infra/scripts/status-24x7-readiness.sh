@@ -28,6 +28,7 @@ launchctl print-disabled "gui/$(id -u)" 2>/dev/null | grep 'com.aiassistant.mlx-
 echo
 echo "== mlx launchd daemons =="
 launchctl print system/com.aiassistant.mlx-base-server.daemon >/dev/null 2>&1 && echo "mlx base daemon loaded" || echo "mlx base daemon not loaded"
+launchctl print system/com.aiassistant.mlx-gemma-server.daemon >/dev/null 2>&1 && echo "mlx gemma daemon loaded" || echo "mlx gemma daemon not loaded"
 launchctl print system/com.aiassistant.mlx-webui-proxy.daemon >/dev/null 2>&1 && echo "mlx webui proxy daemon loaded" || echo "mlx webui proxy daemon not loaded"
 
 echo
@@ -37,4 +38,5 @@ docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps
 echo
 echo "== mlx endpoints =="
 curl -fsS http://127.0.0.1:1235/v1/models >/dev/null && echo "1235 ok" || echo "1235 unavailable"
+curl -fsS http://127.0.0.1:1240/v1/models >/dev/null && echo "1240 ok" || echo "1240 unavailable"
 curl -fsS http://127.0.0.1:1236/v1/models >/dev/null && echo "1236 ok" || echo "1236 unavailable"

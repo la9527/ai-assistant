@@ -13,12 +13,38 @@ TARGET_DIR="/Library/LaunchDaemons"
 TARGET_USER="${SUDO_USER:-byoungyoungla}"
 TARGET_UID="$(id -u "$TARGET_USER")"
 TARGET_HOME="$(dscl . -read "/Users/$TARGET_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+INSTALL_GEMMA=0
+
+if [[ "${1:-}" == "--with-gemma" ]]; then
+  INSTALL_GEMMA=1
+fi
 
 if [[ -z "$TARGET_HOME" ]]; then
   TARGET_HOME="/Users/$TARGET_USER"
 fi
 
 LOCAL_SCRIPT_DIR="$TARGET_HOME/.aiassistant-launchd-scripts"
+
+wait_for_endpoints() {
+  local port
+  local attempt
+
+  for port in "$@"; do
+    for attempt in {1..20}; do
+      if curl -fsS "http://127.0.0.1:$port/v1/models" >/dev/null 2>&1; then
+        echo "Endpoint $port ready"
+        break
+      fi
+
+      if [[ $attempt -eq 20 ]]; then
+        echo "Endpoint $port did not become ready yet" >&2
+        break
+      fi
+
+      sleep 1
+    done
+  done
+}
 
 plist_set_string() {
   local plist_path="$1"
@@ -35,6 +61,11 @@ rewrite_daemon_plist_for_current_layout() {
 
   case "$plist_name" in
     com.aiassistant.mlx-base-server.daemon.plist)
+      plist_set_string "$plist_path" ":ProgramArguments:0" "/bin/zsh"
+      plist_set_string "$plist_path" ":ProgramArguments:1" "-lc"
+      plist_set_string "$plist_path" ":ProgramArguments:2" "$LOCAL_SCRIPT_DIR/start-mlx-base-server.sh"
+      ;;
+    com.aiassistant.mlx-gemma-server.daemon.plist)
       plist_set_string "$plist_path" ":ProgramArguments:0" "/bin/zsh"
       plist_set_string "$plist_path" ":ProgramArguments:1" "-lc"
       plist_set_string "$plist_path" ":ProgramArguments:2" "$LOCAL_SCRIPT_DIR/start-mlx-base-server.sh"
@@ -56,8 +87,16 @@ daemon_plists=(
   com.aiassistant.mlx-webui-proxy.daemon.plist
 )
 
+endpoint_ports=(1235 1236)
+
+if [[ $INSTALL_GEMMA -eq 1 ]]; then
+  daemon_plists+=(com.aiassistant.mlx-gemma-server.daemon.plist)
+  endpoint_ports+=(1240)
+fi
+
 gui_plists=(
   com.aiassistant.mlx-base-server.plist
+  com.aiassistant.mlx-gemma-server.plist
   com.aiassistant.mlx-webui-proxy.plist
 )
 
@@ -81,10 +120,12 @@ done
 for plist_name in "${daemon_plists[@]}"; do
   src="$LAUNCHD_DIR/$plist_name"
   dst="$TARGET_DIR/$plist_name"
+  label="${plist_name%.plist}"
   cp "$src" "$dst"
   rewrite_daemon_plist_for_current_layout "$plist_name" "$dst"
   chown root:wheel "$dst"
   chmod 644 "$dst"
+  launchctl enable "system/$label" >/dev/null 2>&1 || true
   launchctl bootout system "$dst" >/dev/null 2>&1 || true
   launchctl bootstrap system "$dst"
 done
@@ -92,9 +133,27 @@ done
 launchctl kickstart -k system/com.aiassistant.mlx-base-server.daemon
 launchctl kickstart -k system/com.aiassistant.mlx-webui-proxy.daemon
 
+if [[ $INSTALL_GEMMA -eq 1 ]]; then
+  launchctl kickstart -k system/com.aiassistant.mlx-gemma-server.daemon
+else
+  launchctl disable system/com.aiassistant.mlx-gemma-server.daemon >/dev/null 2>&1 || true
+  launchctl bootout system /Library/LaunchDaemons/com.aiassistant.mlx-gemma-server.daemon.plist >/dev/null 2>&1 || true
+fi
+
 launchctl print system/com.aiassistant.mlx-base-server.daemon >/dev/null
 launchctl print system/com.aiassistant.mlx-webui-proxy.daemon >/dev/null
 
+if [[ $INSTALL_GEMMA -eq 1 ]]; then
+  launchctl print system/com.aiassistant.mlx-gemma-server.daemon >/dev/null
+fi
+
+wait_for_endpoints "${endpoint_ports[@]}"
+
 echo "Installed MLX LaunchDaemons for boot-time operation."
+if [[ $INSTALL_GEMMA -eq 1 ]]; then
+  echo "Gemma daemon was installed and started."
+else
+  echo "Gemma daemon was skipped. Use 'sudo infra/scripts/install-launchd-daemons.sh --with-gemma' or 'sudo infra/scripts/start-mlx-services.sh gemma' after installing it once if needed."
+fi
 echo "Disabled user LaunchAgents for MLX to prevent duplicate startup after autologin."
 echo "Docker Compose core stack remains a LaunchAgent because Docker Desktop still requires a logged-in GUI session."

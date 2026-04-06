@@ -205,7 +205,7 @@ Kakao 채널을 추가한다.
 - 현재 기본 운영안은 host MLX server의 `lmstudio-community/LFM2-24B-A2B-MLX-4bit` 단일 모델로 일반 답변과 구조화 추출을 함께 처리하는 방식이다.
 - 현재 MLX structured extraction 대상은 `calendar_create`, `calendar_update`, `calendar_delete`, `gmail_draft`, `gmail_send`, `gmail_reply`, `gmail_thread_reply` 이다.
 - skill-first runtime 경로는 `mail`, `calendar`, `browser`, `macos`, `note`, `search` 도메인에 대해 공통 실행 노드와 공통 validation/approval 처리로 통합했다.
-- 현재 운영 launchd 는 `com.aiassistant.mlx-base-server`, `com.aiassistant.mlx-webui-proxy`, `com.aiassistant.stack` 를 사용하며, 설치와 수동 운영 절차는 [docs/service-operations.md](docs/service-operations.md) 와 [docs/mlx-operations.md](docs/mlx-operations.md) 에 정리했다.
+- 현재 운영 launchd 는 `com.aiassistant.mlx-base-server`, `com.aiassistant.mlx-gemma-server`, `com.aiassistant.mlx-webui-proxy`, `com.aiassistant.stack` 를 사용하며, 설치와 수동 운영 절차는 [docs/service-operations.md](docs/service-operations.md) 와 [docs/mlx-operations.md](docs/mlx-operations.md) 에 정리했다.
 - Guacamole remote desktop 는 `infra/scripts/start-remote-desktop.sh`, `infra/scripts/stop-remote-desktop.sh`, `infra/scripts/status-remote-desktop.sh` 기준으로 운영한다. 이 스크립트들은 현재 셸에 export 된 `GUACAMOLE_*` 값이 `.env` 설정을 덮어쓰지 않도록 먼저 정리한다.
 - 2026-03-22 재검증에서는 일정 생성 승인 후 `route=n8n_fallback` 이 반환됐고, 원인은 API runtime 이 아니라 `assistant-calendar-create` webhook 이 `200 OK` 와 빈 body 를 반환하는 운영 문제로 확인됐다.
 - 이후 ExtData 저장소 전환 이후에는 같은 webhook 이 `SQLITE_NOTADB` 또는 `SQLITE_IOERR` 로도 실패할 수 있음을 확인했고, reset 이후에도 재발해 현재 운영 기준은 n8n DB를 PostgreSQL로 전환하는 것이다.

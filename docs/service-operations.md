@@ -7,6 +7,7 @@
 현재 기준 자동 시작 대상은 아래와 같다.
 
 - host MLX base server: `com.aiassistant.mlx-base-server`
+- host MLX Gemma sidecar: `com.aiassistant.mlx-gemma-server`
 - host MLX WebUI proxy: `com.aiassistant.mlx-webui-proxy`
 - Docker Compose core stack: `com.aiassistant.stack`
 
@@ -55,6 +56,12 @@ Docker Compose core stack에는 기본적으로 아래 서비스가 포함된다
 infra/scripts/install-launchd-services.sh
 ```
 
+Gemma LaunchAgent 까지 같이 설치하려면 아래처럼 실행한다.
+
+```bash
+infra/scripts/install-launchd-services.sh --with-gemma
+```
+
 외부 SSD로 기존 데이터를 옮길 때는 설치 전에 아래 스크립트를 1회 실행한다.
 
 ```bash
@@ -76,10 +83,13 @@ infra/scripts/reset-n8n-extdata-storage.sh --import-only
 이 스크립트는 아래 작업을 수행한다.
 
 - `~/Library/LaunchAgents` 에 plist 복사
+- 이미 같은 label의 system LaunchDaemon이 설치된 MLX 항목은 중복 LaunchAgent를 만들지 않고 건너뜀
 - 현재 저장소 절대 경로와 사용자 홈 경로로 plist 내부 값을 재작성
 - 기존 동일 label이 있으면 `bootout`
 - `bootstrap` 으로 재등록
 - `kickstart` 로 즉시 시작
+
+부분적으로 LaunchDaemon 전환이 된 상태라면 install 결과가 label별로 달라질 수 있다. 예를 들어 `mlx-base-server` 만 daemon으로 설치되어 있고 `mlx-webui-proxy` daemon이 없다면, user install은 `mlx-base-server` LaunchAgent는 건너뛰고 `mlx-webui-proxy` LaunchAgent만 다시 설치한다.
 
 저장소 디렉토리를 이동한 경우에는 위 설치 스크립트를 다시 실행해 launchd 등록값을 갱신한다.
 
@@ -101,6 +111,7 @@ sudo infra/scripts/install-launchd-daemons.sh
 이 스크립트는 아래 작업을 수행한다.
 
 - `com.aiassistant.mlx-base-server.daemon`
+- `com.aiassistant.mlx-gemma-server.daemon`
 - `com.aiassistant.mlx-webui-proxy.daemon`
 - 두 daemon plist를 `/Library/LaunchDaemons` 에 복사
 - 현재 저장소 절대 경로, 실행 사용자, 홈 경로로 plist 내부 값을 재작성
@@ -122,6 +133,8 @@ sudo infra/scripts/install-launchd-daemons.sh
 2. `com.aiassistant.mlx-webui-proxy`
 3. `com.aiassistant.stack`
 
+Gemma sidecar 는 기본 자동 시작 대상이 아니다. 필요할 때만 별도 명령으로 올린다.
+
 `com.aiassistant.stack` 는 내부적으로 아래 순서로 동작한다.
 
 1. Docker Desktop이 이미 준비되었는지 확인
@@ -137,10 +150,29 @@ sudo infra/scripts/install-launchd-daemons.sh
 infra/scripts/install-launchd-services.sh
 ```
 
+Gemma LaunchAgent 까지 같이 재적용하려면:
+
+```bash
+infra/scripts/install-launchd-services.sh --with-gemma
+```
+
 ### 1-1. MLX LaunchDaemon 경로 수동 재적용
 
 ```bash
 sudo infra/scripts/install-launchd-daemons.sh
+```
+
+Gemma daemon 까지 같이 설치하고 즉시 기동하려면 아래처럼 실행한다.
+
+```bash
+sudo infra/scripts/install-launchd-daemons.sh --with-gemma
+```
+
+`assistant.sh` 래퍼를 쓰는 경우는 아래 명령으로 같다.
+
+```bash
+./assistant.sh launchd install-gemma
+sudo ./assistant.sh launchd install-daemon-gemma
 ```
 
 ### 2. Docker Compose core stack만 수동 시작
@@ -176,15 +208,71 @@ infra/scripts/start-tailscale-serve.sh
 ### 5. MLX launchd만 수동 재시작
 
 ```bash
-launchctl kickstart -k gui/$(id -u)/com.aiassistant.mlx-base-server
-launchctl kickstart -k gui/$(id -u)/com.aiassistant.mlx-webui-proxy
+infra/scripts/start-mlx-services.sh
 ```
+
+non-sudo 실행에서는 이미 system LaunchDaemon으로 관리되는 label을 다시 LaunchAgent로 만들거나 중복 기동하지 않는다. 이 경우 user mode는 daemon-backed label을 건너뛰고, user-managed label만 시작한다.
 
 LaunchDaemon 경로를 쓰는 경우:
 
 ```bash
 sudo launchctl kickstart -k system/com.aiassistant.mlx-base-server.daemon
 sudo launchctl kickstart -k system/com.aiassistant.mlx-webui-proxy.daemon
+```
+
+Gemma sidecar 는 별도로 재시작한다.
+
+```bash
+infra/scripts/start-mlx-services.sh gemma
+sudo infra/scripts/start-mlx-services.sh gemma
+```
+
+### 5-1. MLX 상태 확인
+
+```bash
+infra/scripts/status-mlx-services.sh
+infra/scripts/status-mlx-services.sh gemma
+infra/scripts/status-mlx-services.sh all
+```
+
+`sudo` 로 상태를 확인할 때도 현재 로그인 사용자의 `~/Library/LaunchAgents` 기준으로 agent 설치 상태를 보여준다.
+
+### 6. MLX launchd만 수동 중지
+
+```bash
+infra/scripts/stop-mlx-services.sh
+```
+
+Gemma sidecar 만 중지하려면:
+
+```bash
+infra/scripts/stop-mlx-services.sh gemma
+sudo infra/scripts/stop-mlx-services.sh gemma
+```
+
+LaunchDaemon 경로까지 함께 중지하려면:
+
+```bash
+sudo infra/scripts/stop-mlx-services.sh
+```
+
+### 7. MLX launchd 등록 제거
+
+```bash
+infra/scripts/uninstall-mlx-services.sh
+```
+
+Gemma sidecar 만 제거하려면:
+
+```bash
+infra/scripts/uninstall-mlx-services.sh gemma
+sudo infra/scripts/uninstall-mlx-services.sh gemma
+```
+
+boot-time LaunchDaemon 제거까지 포함하려면:
+
+```bash
+sudo infra/scripts/uninstall-mlx-services.sh
 ```
 
 ## 수동 중지 방법

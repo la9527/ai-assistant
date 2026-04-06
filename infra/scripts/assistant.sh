@@ -42,6 +42,13 @@ show_help() {
   │             │ logs  [옵션]      │ 실시간 로그 보기             │
   ├─────────────┼───────────────────┼──────────────────────────────┤
   │ mlx         │ start             │ MLX base 서버 시작           │
+  │             │ start-gemma       │ MLX Gemma 서버 시작          │
+  │             │ status            │ MLX base 상태 확인           │
+  │             │ status-gemma      │ MLX Gemma 상태 확인          │
+  │             │ stop              │ MLX launchd 서비스 중지      │
+  │             │ stop-gemma        │ MLX Gemma 서버 중지          │
+  │             │ uninstall         │ MLX launchd 등록 제거        │
+  │             │ uninstall-gemma   │ MLX Gemma 등록 제거          │
   │             │ start-proxy       │ MLX WebUI 프록시 시작        │
   ├─────────────┼───────────────────┼──────────────────────────────┤
   │ remote      │ start             │ Guacamole 원격 데스크톱 시작 │
@@ -54,7 +61,9 @@ show_help() {
   │             │ status            │ Tailscale serve 상태         │
   ├─────────────┼───────────────────┼──────────────────────────────┤
   │ launchd     │ install           │ LaunchAgent 서비스 설치      │
+  │             │ install-gemma     │ Gemma LaunchAgent 설치       │
   │             │ install-daemon    │ LaunchDaemon 설치 (sudo)     │
+  │             │ install-daemon-gemma │ Gemma LaunchDaemon 설치 (sudo) │
   ├─────────────┼───────────────────┼──────────────────────────────┤
   │ readiness   │                   │ 24×7 운영 준비 상태 점검     │
   │ help        │                   │ 이 도움말 표시               │
@@ -64,10 +73,19 @@ show_help() {
     assistant stack start                  # 전체 스택 시작
     assistant stack stop api               # api 서비스만 중지
     assistant stack logs -n 100 api        # api 로그 100줄
-    assistant mlx start                    # MLX 서버 시작
+    assistant mlx start                    # MLX base + proxy 시작
+    assistant mlx start-gemma              # MLX Gemma 시작
+    assistant mlx status                   # MLX base + proxy 상태
+    assistant mlx status-gemma             # MLX Gemma 상태
+    assistant mlx stop                     # MLX launchd 서비스 중지
+    assistant mlx stop-gemma               # MLX Gemma 중지
+    assistant mlx uninstall                # MLX launchd 등록 제거
+    assistant mlx uninstall-gemma          # MLX Gemma 등록 제거
     assistant remote start                 # 원격 데스크톱 시작
     assistant tailscale start 443          # Tailscale serve 포트 443
     assistant launchd install              # LaunchAgent 설치
+    assistant launchd install-gemma        # Gemma LaunchAgent 설치
+    sudo assistant launchd install-daemon-gemma # Gemma LaunchDaemon 설치
     assistant readiness                    # 24×7 점검
 
 EOF
@@ -104,11 +122,18 @@ cmd_stack() {
 cmd_mlx() {
   local action="${1:-help}"; shift 2>/dev/null || true
   case "$action" in
-    start)       _run start-mlx-base-server.sh "$@" ;;
+    start)       _run start-mlx-services.sh default "$@" ;;
+    start-gemma) _run start-mlx-services.sh gemma "$@" ;;
+    status)      _run status-mlx-services.sh default "$@" ;;
+    status-gemma) _run status-mlx-services.sh gemma "$@" ;;
+    stop)        _run stop-mlx-services.sh default "$@" ;;
+    stop-gemma)  _run stop-mlx-services.sh gemma "$@" ;;
+    uninstall)   _run uninstall-mlx-services.sh default "$@" ;;
+    uninstall-gemma) _run uninstall-mlx-services.sh gemma "$@" ;;
     start-proxy) _run start-mlx-webui-proxy.sh "$@" ;;
     *)
       _err "mlx: 알 수 없는 동작 '$action'"
-      printf "  사용 가능: start, start-proxy\n"
+      printf "  사용 가능: start, start-gemma, status, status-gemma, stop, stop-gemma, uninstall, uninstall-gemma, start-proxy\n"
       return 1
       ;;
   esac
@@ -150,10 +175,12 @@ cmd_launchd() {
   local action="${1:-help}"; shift 2>/dev/null || true
   case "$action" in
     install)        _run install-launchd-services.sh "$@" ;;
+    install-gemma)  _run install-launchd-services.sh --with-gemma "$@" ;;
     install-daemon) _run install-launchd-daemons.sh "$@" ;;
+    install-daemon-gemma) _run install-launchd-daemons.sh --with-gemma "$@" ;;
     *)
       _err "launchd: 알 수 없는 동작 '$action'"
-      printf "  사용 가능: install, install-daemon\n"
+      printf "  사용 가능: install, install-gemma, install-daemon, install-daemon-gemma\n"
       return 1
       ;;
   esac
