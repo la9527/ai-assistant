@@ -1,6 +1,9 @@
 import json
 import logging
 import re
+from datetime import datetime, timezone
+from datetime import timedelta
+from email.utils import parsedate_to_datetime
 
 import httpx
 
@@ -82,7 +85,7 @@ def _build_structured_extraction_prompt(intent: str, domain: str | None = None) 
         "calendar_create는 title, startAt, endAt 이 중요하다. calendar_update는 기존 일정 검색용 searchTitle/searchTimeMin/searchTimeMax 와 새 시간 startAt/endAt 을 함께 채운다. "
         "calendar_delete는 searchTitle, searchTimeMin, searchTimeMax 를 채운다. "
         "calendar_summary는 조회 범위인 searchTimeMin/searchTimeMax 가 중요하다. '오늘 일정'이면 오늘 0시~내일 0시, '이번 주'면 월요일~일요일, '내일'이면 내일 0시~모레 0시를 ISO 형식으로 채운다. searchTitle이 언급되면 함께 채운다. "
-        "gmail_summary는 searchQuery 가 중요하다. '오늘 메일'이면 newer_than:1d, '이번 주'면 newer_than:7d, '최근 메일'이면 newer_than:3d 를 넣는다. 발신자, 제목이 언급되면 from:, subject: 를 추가한다. "
+        "gmail_summary와 gmail_list는 searchQuery, limit, groupByDate 가 중요하다. 기간 조건은 가능하면 after:/before: 또는 newer_than: 형태로 넣고, 발신자/수신자/제목/본문 키워드가 언급되면 from:, to:, subject:, quoted phrase 를 조합한다. 읽지 않음, 중요, 별표, 첨부, 받은편지함/보낸편지함/초안 같은 상태 조건도 searchQuery 에 반영한다. "
         "gmail_reply는 body와 searchQuery 또는 threadReference/messageReference 중 하나가 중요하다. "
         "browser_read, browser_screenshot 는 url 이 중요하고, browser_search 는 query 가 중요하다. "
         "macos_reminder_create 는 remidnerName 대신 reminderName 필드를 사용하고, macos_volume_set 은 volumeLevel, macos_finder_open 은 finderPath 를 사용한다. "
@@ -369,40 +372,169 @@ def _extract_gmail_detail_fields(raw_body: dict) -> dict[str, str]:
 
     return detail
 
-def _format_gmail_items_markdown(items: list[dict]) -> str:
+
+def _parse_mail_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.isdigit() and len(text) >= 10:
+        try:
+            ts = int(text) / 1000 if len(text) > 10 else int(text)
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        except (ValueError, OverflowError, OSError):
+            pass
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        pass
+    try:
+        return parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _format_mail_group_label(item: dict) -> str:
+    dt = _parse_mail_datetime(item.get("internalDate") or item.get("date"))
+    if dt is None:
+        return _clean_mail_text(item.get("date"), "날짜 미상", collapse_whitespace=True)
+
+    local_dt = dt.astimezone() if dt.tzinfo is not None else dt
+    today = datetime.now(local_dt.tzinfo).date() if local_dt.tzinfo is not None else datetime.now().date()
+    if local_dt.date() == today:
+        return "오늘"
+    if local_dt.date() == today - timedelta(days=1):
+        return "어제"
+
+    weekday_names = ("월", "화", "수", "목", "금", "토", "일")
+    return f"{local_dt:%Y-%m-%d} {weekday_names[local_dt.weekday()]}요일"
+
+
+def _format_mail_time_label(item: dict) -> str:
+    dt = _parse_mail_datetime(item.get("internalDate") or item.get("date"))
+    if dt is None:
+        return _clean_mail_text(item.get("date"), "", collapse_whitespace=True)
+    local_dt = dt.astimezone() if dt.tzinfo is not None else dt
+    return local_dt.strftime("%H:%M")
+
+
+def _format_mail_datetime_label(item: dict) -> str:
+    """날짜+시각을 '2026-03-22 (토) 08:58' 형태로 반환한다."""
+    dt = _parse_mail_datetime(item.get("internalDate") or item.get("date"))
+    if dt is None:
+        return _clean_mail_text(item.get("date"), "", collapse_whitespace=True)
+    local_dt = dt.astimezone() if dt.tzinfo is not None else dt
+    weekday_names = ("월", "화", "수", "목", "금", "토", "일")
+    return f"{local_dt:%Y-%m-%d} ({weekday_names[local_dt.weekday()]}) {local_dt:%H:%M}"
+
+
+def _mail_status_labels(item: dict) -> str:
+    labels: list[str] = []
+    if item.get("unread") is True:
+        labels.append("안읽음")
+    if item.get("important") is True:
+        labels.append("중요")
+    if item.get("starred") is True:
+        labels.append("별표")
+    if item.get("hasAttachments") is True or item.get("has_attachments") is True:
+        labels.append("첨부")
+    return f" ({', '.join(labels)})" if labels else ""
+
+
+def _format_mail_query_hint(raw_body: dict) -> str | None:
+    query = _clean_mail_text(raw_body.get("query") or raw_body.get("searchQuery"), "", collapse_whitespace=True)
+    if not query:
+        return None
+    return f"조건: {query}"
+
+
+def _format_single_mail_item(item: dict, position: int, *, grouped: bool, sent_mode: bool = False) -> list[str]:
+    idx = item.get("index") or position
+    sender = _clean_mail_text(item.get("sender"), "발신자 미상")
+    subject = _clean_mail_text(item.get("subject"), "제목 없음")
+    snippet = _clean_mail_text(item.get("snippet"), "")
+    date = _clean_mail_text(item.get("date"), "")
+    time_label = _format_mail_time_label(item)
+    status = _mail_status_labels(item)
+
+    lines = [f"**{idx}){status}**", f"제목: {subject}"]
+    if sent_mode:
+        to_recipients = _clean_mail_text(item.get("toRecipients") or item.get("to_recipients"), "수신자 미상")
+        lines.append(f"받는 사람: {to_recipients}")
+    else:
+        lines.append(f"보낸 사람: {sender}")
+    if grouped:
+        if time_label:
+            lines.append(f"시각: {time_label}")
+    else:
+        dt_label = _format_mail_datetime_label(item)
+        if dt_label:
+            lines.append(f"날짜: {dt_label}")
+    if snippet:
+        lines.append(f"미리보기: {snippet}")
+    return lines
+
+def _format_gmail_items_markdown(items: list[dict], raw_body: dict | None = None) -> str:
     """메일 아이템 목록을 WebUI 친화적인 Markdown으로 포맷한다."""
+    raw_body = raw_body or {}
     if not items:
         return "최근 7일 이내 받은편지함 메일이 없습니다."
 
-    lines = ["📬 **최근 메일 요약**", ""]
-    for position, item in enumerate(items, start=1):
-        idx = item.get("index") or position
-        sender = _clean_mail_text(item.get("sender"), "발신자 미상")
-        subject = _clean_mail_text(item.get("subject"), "제목 없음")
-        snippet = _clean_mail_text(item.get("snippet"), "")
-        date = _clean_mail_text(item.get("date"), "")
+    mailbox_scope = str(raw_body.get("mailboxScope") or raw_body.get("mailbox_scope") or "default").lower()
+    sent_mode = mailbox_scope in ("sent", "drafts")
+    grouped = bool(raw_body.get("groupByDate"))
+    if grouped and all(_format_mail_group_label(item) == "날짜 미상" for item in items):
+        grouped = False
+    has_filter = bool(raw_body.get("query") or raw_body.get("searchQuery"))
+    title = "📬 **메일 목록**" if grouped or has_filter else "📬 **최근 메일 요약**"
+    lines = [title, ""]
 
-        lines.append(f"**{idx}) {subject}**")
-        lines.append(f"보낸 사람: {sender}")
-        if date:
-            lines.append(f"날짜: {date}")
-        if snippet:
-            lines.append(f"미리보기: {snippet}")
+    query_hint = _format_mail_query_hint(raw_body)
+    if query_hint:
+        lines.append(query_hint)
         lines.append("")
+
+    if grouped:
+        groups: dict[str, list[tuple[int, dict]]] = {}
+        order: list[str] = []
+        for position, item in enumerate(items, start=1):
+            label = _format_mail_group_label(item)
+            if label not in groups:
+                groups[label] = []
+                order.append(label)
+            groups[label].append((position, item))
+
+        for label in order:
+            lines.append(f"**{label}**")
+            lines.append("")
+            for position, item in groups[label]:
+                lines.extend(_format_single_mail_item(item, position, grouped=True, sent_mode=sent_mode))
+                lines.append("")
+    else:
+        for position, item in enumerate(items, start=1):
+            lines.extend(_format_single_mail_item(item, position, grouped=False, sent_mode=sent_mode))
+            lines.append("")
+
+    if raw_body.get("hasMore"):
+        lines.append("다음 결과가 더 있습니다. `더보기` 또는 `다음 10건`처럼 요청하면 이어서 볼 수 있습니다.")
 
     return "\n".join(lines)
 
 
-def _format_gmail_items_compact(items: list[dict], reply: str) -> str:
+def _format_gmail_items_compact(items: list[dict], reply: str, *, sent_mode: bool = False) -> str:
     """Kakao 등 제한된 채널용 간결한 형식."""
     if not items:
         return reply or "최근 7일 이내 받은편지함 메일이 없습니다."
     lines = ["최근 메일 요약입니다."]
     for item in items:
         idx = item.get("index", "")
-        sender = item.get("sender", "발신자 미상")
         subject = item.get("subject", "제목 없음")
-        lines.append(f"{idx}. {sender} - {subject}")
+        if sent_mode:
+            contact = item.get("toRecipients") or item.get("to_recipients") or "수신자 미상"
+        else:
+            contact = item.get("sender", "발신자 미상")
+        lines.append(f"{idx}. {contact} - {subject}")
     return "\n".join(lines)
 
 
@@ -563,14 +695,20 @@ def format_gmail_summary(
         items = _parse_reply_to_items(reply)
 
     if not items:
-        return reply or "최근 7일 이내 받은편지함 메일이 없습니다."
+        query_hint = _format_mail_query_hint(raw_body)
+        base_reply = reply or "최근 7일 이내 받은편지함 메일이 없습니다."
+        if query_hint and query_hint not in base_reply:
+            return f"{base_reply}\n{query_hint}"
+        return base_reply
 
     # WebUI 채널: 항상 deterministic Markdown 포맷을 사용해 가독성을 유지한다.
     if channel in ("webui", "web", "api"):
-        return _format_gmail_items_markdown(items)
+        return _format_gmail_items_markdown(items, raw_body)
 
     # Kakao 등 기타 채널: 간결한 텍스트
-    return _format_gmail_items_compact(items, reply)
+    mailbox_scope = str(raw_body.get("mailboxScope") or raw_body.get("mailbox_scope") or "default").lower()
+    sent_mode = mailbox_scope in ("sent", "drafts")
+    return _format_gmail_items_compact(items, reply, sent_mode=sent_mode)
 
 
 def format_gmail_detail(
@@ -585,6 +723,49 @@ def format_gmail_detail(
     if channel in ("webui", "web", "api"):
         return _format_gmail_detail_markdown(detail)
     return _format_gmail_detail_compact(detail, reply)
+
+
+def format_gmail_thread(
+    raw_body: dict,
+    channel: str,
+) -> str:
+    reply = str(raw_body.get("reply") or "").strip()
+    items = raw_body.get("items") or []
+    if not items:
+        return reply or "요청한 조건에 맞는 메일 스레드를 찾지 못했습니다."
+
+    if channel not in ("webui", "web", "api"):
+        lines = ["메일 스레드입니다."]
+        for idx, item in enumerate(items, start=1):
+            sender = _clean_mail_text(item.get("sender"), "발신자 미상")
+            subject = _clean_mail_text(item.get("subject"), "(제목 없음)")
+            lines.append(f"{idx}. {sender} - {subject}")
+        return "\n".join(lines)
+
+    lines = ["🧵 **메일 스레드**", ""]
+    thread_subject = _clean_mail_text(raw_body.get("subject"), "", collapse_whitespace=True)
+    if thread_subject:
+        lines.append(f"**제목**: {thread_subject}")
+        lines.append("")
+
+    for idx, item in enumerate(items, start=1):
+        sender = _clean_mail_text(item.get("sender"), "발신자 미상")
+        to_text = _clean_mail_text(item.get("to") or item.get("toRecipients") or item.get("to_recipients"), "", collapse_whitespace=True)
+        date_text = _format_mail_datetime_label(item)
+        snippet = _clean_mail_text(item.get("snippet"), "")
+        body = _clean_mail_text(item.get("body") or item.get("bodyText") or item.get("plainBody"), "")
+        preview = body or snippet
+
+        lines.append(f"**{idx}) {sender}**")
+        if date_text:
+            lines.append(f"날짜: {date_text}")
+        if to_text:
+            lines.append(f"받는 사람: {to_text}")
+        if preview:
+            lines.append(f"내용: {preview}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
 
 
 def _parse_reply_to_items(reply: str) -> list[dict]:

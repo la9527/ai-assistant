@@ -3,11 +3,13 @@
 ## 현재 상태
 
 - `assistant-gmail-summary` workflow가 추가되어 있다.
+- `assistant-gmail-thread` workflow가 추가되어 있다.
 - FastAPI는 메일 관련 요청을 `N8N_GMAIL_WEBHOOK_PATH` 경로로 보낸다.
 - `Gmail OAuth2 API` credential 연결이 완료됐다.
-- 현재 workflow는 최근 7일 기준 받은편지함 메일 최대 5건을 읽어 제목과 발신자를 요약한다.
+- 현재 workflow는 메일 목록 조회에 `searchQuery`, `limit`, `groupByDate` 를 전달할 수 있고, FastAPI는 기간, 제목, 발신자, 수신자, 본문 키워드, 읽지 않음, 중요, 첨부, 받은편지함/보낸편지함/초안 같은 기본 조건을 Gmail query 로 변환한다.
 - `assistant-gmail-draft`, `assistant-gmail-send` workflow가 추가되어 있다.
 - `assistant-gmail-reply` workflow가 추가되어 있다.
+- `assistant-gmail-thread` workflow가 추가되어 있다.
 - 메일 초안 작성과 실제 발송은 승인 티켓 이후에만 실행한다.
 - 메일 회신과 thread 이어쓰기도 승인 티켓 이후에만 실행한다.
 - `첨부 https://...` 형태의 공용 URL 1건은 초안, 발송, 회신 경로에서 실제 첨부파일로 내려받아 포함할 수 있다.
@@ -15,10 +17,11 @@
 ## 현재 한계
 
 - 현재 읽기 기능은 사실상 `assistant-gmail-summary` 단일 workflow 중심이다.
-- 조회 조건은 받은편지함, 최근 기간, 최대 건수 정도만 제한적으로 다룬다.
-- 응답 표현은 최근 메일 목록 요약에 최적화되어 있고, 날짜 그룹화, 더보기, 다건 선택, 본문 상세 조회는 정식 인터페이스로 분리되어 있지 않다.
-- FastAPI 쪽 구조화 추출은 `searchQuery` 정도는 만들 수 있지만, `limit`, `cursor`, `detailLevel`, `groupByDate`, `selectedIndexes` 같은 읽기 파라미터는 아직 schema에 없다.
-- 따라서 지금 상태는 LLM이 조회 의도를 이해해도, 실행 계층에서 그 의도를 일반화된 도구 호출로 옮기기 어렵다.
+- `gmail_thread` 조회는 구현되었지만, 현재는 최근 검색 결과나 직전 상세 조회 컨텍스트를 바탕으로 thread를 확정하는 1차 형태다.
+- 조회 조건은 이전보다 넓어졌지만, 여전히 Gmail native query 에 의존하므로 `제목만`, `본문만` 같은 완전한 필드 분리는 어렵다. 현재 `제목`은 `subject:` 로, `내용/본문`은 quoted keyword 검색으로 근사한다.
+- 응답 표현은 목록형 UX로 보강됐지만, `더보기`, 다건 선택, 스레드 조회, 후속 액션 버튼까지 완성된 상태는 아니다.
+- FastAPI schema 에는 `limit`, `cursor`, `groupByDate`, `detailLevel`, `selectedIndexes` 가 이미 들어가 있지만, 읽기 전용 workflow 분리와 세션 상태 활용은 아직 부분적이다.
+- 따라서 지금 상태는 "단순 최근 메일 요약" 단계는 넘었지만, 일반적인 메일 클라이언트 수준의 탐색 UX까지는 아직 가지 못했다.
 
 ## 목표 구조
 
@@ -236,8 +239,11 @@
 
 - direct webhook 기준 `assistant-gmail-summary` 는 최근 메일 3건 조회에 성공했다.
 - direct webhook 기준 `assistant-gmail-detail` 는 `messageId=19d12c96afa467cb` 상세 조회에 성공했다.
+- direct webhook 기준 `assistant-gmail-thread` 는 `thread_id=19d12ad0daeb94ee` 스레드 조회에 성공했다.
 - direct webhook 기준 `assistant-gmail-draft` 는 검증 초안 생성에 성공했고 `draft_id=r5742016866116249222` 를 반환했다.
 - direct webhook 기준 `assistant-gmail-send` 는 `la9527@daum.net` 대상 검증 메일 발송에 성공했고 `message_id=19d12d52dffbc372` 를 반환했다.
 - direct webhook 기준 `assistant-gmail-reply` 는 `thread_id=19d12ad0daeb94ee`, `message_id=19d12c96afa467cb` 대상 회신에 성공했고 `message_id=19d12d53267aec97` 를 반환했다.
 - API 경로에서도 `최근 메일 3개 요약해줘`, `방금 조회한 보안 알림 메일 자세히 보여줘` 요청이 모두 `route=n8n` 으로 성공했다.
+- API 경로에서도 `최근 메일 3건 보여줘` → `1번 메일 자세히 보여줘` → `같은 스레드 보여줘` 흐름이 같은 session에서 `route=n8n` 으로 성공했다.
+- API 경로에서 `최근 메일 3건 보여줘` 직후 `1번 보여줘`, `2번 보여줘`처럼 메일/상세 키워드 없이 번호만 말해도 같은 session의 목록 컨텍스트를 사용해 상세 조회로 연결된다.
 - API approval 경로에서도 Gmail draft, send, reply 가 모두 승인 후 정상 실행됐다.

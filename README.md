@@ -26,9 +26,9 @@
 - 자동화 분리: 판단은 LangGraph, 외부 API 실행은 n8n으로 분리한다.
 - 승인 기반 실행: 시스템 조작, 메시지 발송, 브라우저 자동화는 승인 단계를 둔다.
 
-현재 24시간 운영 기준으로는 MLX 런타임은 LaunchDaemon 전환이 가능하지만, Docker Compose core stack은 Docker Desktop 의존 때문에 여전히 로그인 세션 기반 LaunchAgent 성격이 남아 있다. 자세한 운영 절차는 [docs/service-operations.md](docs/service-operations.md)에 정리한다.
+현재 24시간 운영 기준으로는 llama.cpp LFM2 런타임은 LaunchDaemon 전환이 가능하지만, Docker Compose core stack은 Docker Desktop 의존 때문에 여전히 로그인 세션 기반 LaunchAgent 성격이 남아 있다. 자세한 운영 절차는 [docs/service-operations.md](docs/service-operations.md)에 정리한다.
 
-대용량 데이터 저장 기본 경로는 `/Volumes/ExtData/ai-assistant` 기준으로 맞춘다. Open WebUI, n8n, PostgreSQL, Redis, Caddy, Guacamole 데이터와 MLX/Hugging Face 계열 모델 캐시는 가능하면 이 경로 아래로 모은다.
+대용량 데이터 저장 기본 경로는 `/Volumes/ExtData/ai-assistant` 기준으로 맞춘다. Open WebUI, n8n, PostgreSQL, Redis, Caddy, Guacamole 데이터와 llama.cpp/Hugging Face 계열 모델 캐시는 가능하면 이 경로 아래로 모은다.
 
 ## 상위 수준 기술 스택
 
@@ -47,7 +47,7 @@
 ## 대용량 저장소 기준
 
 - Docker 영속 데이터 기본 루트: `/Volumes/ExtData/ai-assistant/docker`
-- MLX/Hugging Face 캐시 기본 루트: `/Volumes/ExtData/ai-assistant/mlx`
+- llama.cpp/Hugging Face 캐시 기본 루트: `/Volumes/ExtData/ai-assistant/llama-cpp`
 - 현재 기준 마이그레이션 스크립트: [infra/scripts/migrate-extdata-storage.sh](infra/scripts/migrate-extdata-storage.sh)
 - n8n 저장소 초기화 및 workflow 재적용 스크립트: [infra/scripts/reset-n8n-extdata-storage.sh](infra/scripts/reset-n8n-extdata-storage.sh)
 - 현재 운영 기준 n8n 메타데이터 DB는 SQLite bind mount 대신 PostgreSQL을 사용하고, `.n8n` 디렉터리는 설정, 로그, custom nodes, 파일성 상태만 `/Volumes/ExtData/ai-assistant/docker/n8n` 아래에 둔다.
@@ -169,7 +169,7 @@ Kakao 채널을 추가한다.
 - [docs/remote-access.md](docs/remote-access.md)
 - [docs/google-calendar-integration.md](docs/google-calendar-integration.md)
 - [docs/gmail-integration.md](docs/gmail-integration.md)
-- [docs/mlx-operations.md](docs/mlx-operations.md)
+- [docs/llama-cpp-operations.md](docs/llama-cpp-operations.md)
 - [docs/service-operations.md](docs/service-operations.md)
 - [docs/slack-integration.md](docs/slack-integration.md)
 - [docs/user-identity-memory-guide.md](docs/user-identity-memory-guide.md)
@@ -202,10 +202,10 @@ Kakao 채널을 추가한다.
 - `.env` 에 `ADMIN_USERNAME`, `ADMIN_PASSWORD` 를 비워 두면 개인 운영 기준으로 관리자 페이지에 바로 진입할 수 있고, 둘 다 설정하면 ID/PASS 로그인 후 서버가 자동 발급한 세션 cookie 기준으로 보호된다.
 - 장기 메모리는 명시적 표현인 `기억해줘`, `앞으로`, `다음부터`, `항상`, `참고해` 등을 포함한 사용자 문장에서만 자동 후보를 추출해 `source=auto` 로 적재한다.
 - `calendar_delete`, `gmail_reply`, `gmail_thread_reply` 는 recent history와 baseline extraction을 함께 local LLM에 보내 JSON extraction을 먼저 시도하고, 실패 시 기존 parser로 fallback 한다.
-- 현재 기본 운영안은 host MLX server의 `lmstudio-community/LFM2-24B-A2B-MLX-4bit` 단일 모델로 일반 답변과 구조화 추출을 함께 처리하는 방식이다.
-- 현재 MLX structured extraction 대상은 `calendar_create`, `calendar_update`, `calendar_delete`, `gmail_draft`, `gmail_send`, `gmail_reply`, `gmail_thread_reply` 이다.
+- 현재 기본 운영안은 host llama.cpp server의 `LiquidAI/LFM2-24B-A2B-GGUF:Q4_0` 단일 모델로 일반 답변과 구조화 추출을 함께 처리하는 방식이다.
+- 현재 local structured extraction 대상은 `calendar_create`, `calendar_update`, `calendar_delete`, `gmail_draft`, `gmail_send`, `gmail_reply`, `gmail_thread_reply` 이다.
 - skill-first runtime 경로는 `mail`, `calendar`, `browser`, `macos`, `note`, `search` 도메인에 대해 공통 실행 노드와 공통 validation/approval 처리로 통합했다.
-- 현재 운영 launchd 는 `com.aiassistant.mlx-base-server`, `com.aiassistant.mlx-gemma-server`, `com.aiassistant.mlx-webui-proxy`, `com.aiassistant.stack` 를 사용하며, 설치와 수동 운영 절차는 [docs/service-operations.md](docs/service-operations.md) 와 [docs/mlx-operations.md](docs/mlx-operations.md) 에 정리했다.
+- 현재 운영 launchd 는 `com.aiassistant.llama-lfm2-server`, `com.aiassistant.stack` 를 사용하며, 설치와 수동 운영 절차는 [docs/service-operations.md](docs/service-operations.md) 와 [docs/llama-cpp-operations.md](docs/llama-cpp-operations.md) 에 정리했다.
 - Guacamole remote desktop 는 `infra/scripts/start-remote-desktop.sh`, `infra/scripts/stop-remote-desktop.sh`, `infra/scripts/status-remote-desktop.sh` 기준으로 운영한다. 이 스크립트들은 현재 셸에 export 된 `GUACAMOLE_*` 값이 `.env` 설정을 덮어쓰지 않도록 먼저 정리한다.
 - 2026-03-22 재검증에서는 일정 생성 승인 후 `route=n8n_fallback` 이 반환됐고, 원인은 API runtime 이 아니라 `assistant-calendar-create` webhook 이 `200 OK` 와 빈 body 를 반환하는 운영 문제로 확인됐다.
 - 이후 ExtData 저장소 전환 이후에는 같은 webhook 이 `SQLITE_NOTADB` 또는 `SQLITE_IOERR` 로도 실패할 수 있음을 확인했고, reset 이후에도 재발해 현재 운영 기준은 n8n DB를 PostgreSQL로 전환하는 것이다.

@@ -6,14 +6,12 @@
 
 현재 기준 자동 시작 대상은 아래와 같다.
 
-- host MLX base server: `com.aiassistant.mlx-base-server`
-- host MLX Gemma sidecar: `com.aiassistant.mlx-gemma-server`
-- host MLX WebUI proxy: `com.aiassistant.mlx-webui-proxy`
+- host llama.cpp LFM2 server: `com.aiassistant.llama-lfm2-server`
 - Docker Compose core stack: `com.aiassistant.stack`
 
 24시간 무인 운영을 기준으로 보면 성격이 둘로 나뉜다.
 
-- MLX base server와 MLX WebUI proxy는 LaunchDaemon으로 전환 가능하다.
+- llama.cpp LFM2 server는 LaunchDaemon으로 전환 가능하다.
 - Docker Compose core stack은 현재 Docker Desktop을 사용하므로 로그인 세션 없는 완전한 LaunchDaemon 전환이 어렵다.
 
 Docker Compose core stack에는 기본적으로 아래 서비스가 포함된다.
@@ -26,83 +24,53 @@ Docker Compose core stack에는 기본적으로 아래 서비스가 포함된다
 - `webui`
 - `proxy`
 
-대용량 영속 데이터는 기본적으로 `/Volumes/ExtData/ai-assistant` 아래 bind mount 로 저장한다. 현재 기준으로 Open WebUI, n8n, PostgreSQL, Redis, Caddy, Guacamole 데이터와 MLX/Hugging Face 캐시를 이 경로 아래로 모은다.
+대용량 영속 데이터는 기본적으로 `/Volumes/ExtData/ai-assistant` 아래 bind mount 로 저장한다. 현재 기준으로 Open WebUI, n8n, PostgreSQL, Redis, Caddy, Guacamole 데이터와 llama.cpp/Hugging Face 캐시를 이 경로 아래로 모은다.
 
 현재 운영 기준 n8n의 메타데이터 DB는 PostgreSQL을 사용한다. `/Volumes/ExtData/ai-assistant/docker/n8n` 는 n8n 설정 파일, event log, custom nodes, storage 디렉터리 같은 파일성 상태를 저장하고, 실제 workflow/credential/execution 메타데이터 DB는 `/Volumes/ExtData/ai-assistant/docker/postgres` 아래 PostgreSQL 데이터 안에 들어간다.
 
 ## 관련 파일
 
 - launchd 설치 스크립트: [infra/scripts/install-launchd-services.sh](infra/scripts/install-launchd-services.sh)
+- launchd daemon 설치 스크립트: [infra/scripts/install-launchd-daemons.sh](infra/scripts/install-launchd-daemons.sh)
+- llama.cpp 시작 스크립트: [infra/scripts/start-llama-cpp-lfm2-server.sh](infra/scripts/start-llama-cpp-lfm2-server.sh)
+- llama.cpp service 스크립트: [infra/scripts/start-llama-services.sh](infra/scripts/start-llama-services.sh), [infra/scripts/status-llama-services.sh](infra/scripts/status-llama-services.sh), [infra/scripts/stop-llama-services.sh](infra/scripts/stop-llama-services.sh), [infra/scripts/uninstall-llama-services.sh](infra/scripts/uninstall-llama-services.sh)
 - core stack 시작 스크립트: [infra/scripts/start-assistant-stack.sh](infra/scripts/start-assistant-stack.sh)
 - core stack 중지 스크립트: [infra/scripts/stop-assistant-stack.sh](infra/scripts/stop-assistant-stack.sh)
-- n8n ExtData 저장소 초기화 스크립트: [infra/scripts/reset-n8n-extdata-storage.sh](infra/scripts/reset-n8n-extdata-storage.sh)
 - 상태 확인 스크립트: [infra/scripts/status-assistant-services.sh](infra/scripts/status-assistant-services.sh)
-- remote desktop 시작 스크립트: [infra/scripts/start-remote-desktop.sh](infra/scripts/start-remote-desktop.sh)
-- remote desktop 중지 스크립트: [infra/scripts/stop-remote-desktop.sh](infra/scripts/stop-remote-desktop.sh)
-- remote desktop 상태 스크립트: [infra/scripts/status-remote-desktop.sh](infra/scripts/status-remote-desktop.sh)
-- Tailscale Serve 시작 스크립트: [infra/scripts/start-tailscale-serve.sh](infra/scripts/start-tailscale-serve.sh)
-- Tailscale Serve 중지 스크립트: [infra/scripts/stop-tailscale-serve.sh](infra/scripts/stop-tailscale-serve.sh)
-- Tailscale Serve 상태 스크립트: [infra/scripts/status-tailscale-serve.sh](infra/scripts/status-tailscale-serve.sh)
-- LaunchDaemon 설치 스크립트: [infra/scripts/install-launchd-daemons.sh](infra/scripts/install-launchd-daemons.sh)
 - 24시간 운영 상태 스크립트: [infra/scripts/status-24x7-readiness.sh](infra/scripts/status-24x7-readiness.sh)
 - stack launchd plist: [infra/launchd/com.aiassistant.stack.plist](infra/launchd/com.aiassistant.stack.plist)
-- MLX 운영 문서: [docs/mlx-operations.md](docs/mlx-operations.md)
+- llama.cpp launchd plist: [infra/launchd/com.aiassistant.llama-lfm2-server.plist](infra/launchd/com.aiassistant.llama-lfm2-server.plist)
+- llama.cpp 운영 문서: [docs/llama-cpp-operations.md](docs/llama-cpp-operations.md)
 
 ## 자동 시작 설치
 
-최초 1회는 아래 스크립트로 launchd agent를 설치한다.
+최초 1회는 아래 스크립트로 LaunchAgent를 설치한다.
 
 ```bash
 infra/scripts/install-launchd-services.sh
 ```
 
-Gemma LaunchAgent 까지 같이 설치하려면 아래처럼 실행한다.
-
-```bash
-infra/scripts/install-launchd-services.sh --with-gemma
-```
-
-외부 SSD로 기존 데이터를 옮길 때는 설치 전에 아래 스크립트를 1회 실행한다.
-
-```bash
-infra/scripts/migrate-extdata-storage.sh
-```
-
-n8n이 과거 SQLite bind mount 구성에서 `/Volumes/ExtData/ai-assistant/docker/n8n` 아래 `SQLITE_NOTADB`, `SQLITE_IOERR`, `Error while saving insights metadata and raw data` 형태로 깨졌다면 아래 스크립트로 파일성 상태를 백업 후 재초기화할 수 있다.
-
-```bash
-infra/scripts/reset-n8n-extdata-storage.sh
-```
-
-legacy SQLite 복구 시 owner 계정을 다시 만든 뒤 workflow 만 다시 넣고 싶다면 아래처럼 실행한다.
-
-```bash
-infra/scripts/reset-n8n-extdata-storage.sh --import-only
-```
-
 이 스크립트는 아래 작업을 수행한다.
 
 - `~/Library/LaunchAgents` 에 plist 복사
-- 이미 같은 label의 system LaunchDaemon이 설치된 MLX 항목은 중복 LaunchAgent를 만들지 않고 건너뜀
 - 현재 저장소 절대 경로와 사용자 홈 경로로 plist 내부 값을 재작성
-- 기존 동일 label이 있으면 `bootout`
+- 기존 동일 label 이 있으면 `bootout`
 - `bootstrap` 으로 재등록
 - `kickstart` 로 즉시 시작
-
-부분적으로 LaunchDaemon 전환이 된 상태라면 install 결과가 label별로 달라질 수 있다. 예를 들어 `mlx-base-server` 만 daemon으로 설치되어 있고 `mlx-webui-proxy` daemon이 없다면, user install은 `mlx-base-server` LaunchAgent는 건너뛰고 `mlx-webui-proxy` LaunchAgent만 다시 설치한다.
+- system LaunchDaemon 이 이미 있으면 user LaunchAgent 는 건너뜀
 
 저장소 디렉토리를 이동한 경우에는 위 설치 스크립트를 다시 실행해 launchd 등록값을 갱신한다.
 
 설치 후 확인 명령:
 
 ```bash
-launchctl list | grep com.aiassistant.mlx-
+launchctl list | grep com.aiassistant.llama-
 launchctl list | grep com.aiassistant.stack
 ```
 
 ## LaunchDaemon 전환
 
-MLX 계열 서비스를 로그인 없이 부팅 시점부터 올리려면 아래 스크립트를 사용한다.
+llama.cpp 서비스를 로그인 없이 부팅 시점부터 올리려면 아래 스크립트를 사용한다.
 
 ```bash
 sudo infra/scripts/install-launchd-daemons.sh
@@ -110,30 +78,24 @@ sudo infra/scripts/install-launchd-daemons.sh
 
 이 스크립트는 아래 작업을 수행한다.
 
-- `com.aiassistant.mlx-base-server.daemon`
-- `com.aiassistant.mlx-gemma-server.daemon`
-- `com.aiassistant.mlx-webui-proxy.daemon`
-- 두 daemon plist를 `/Library/LaunchDaemons` 에 복사
+- `com.aiassistant.llama-lfm2-server.daemon` 을 `/Library/LaunchDaemons` 에 복사
 - 현재 저장소 절대 경로, 실행 사용자, 홈 경로로 plist 내부 값을 재작성
-- 기존 사용자 LaunchAgent 기반 MLX job을 disable + bootout 처리해 자동 로그인 이후에도 중복 실행 방지
-- system domain에 bootstrap 후 즉시 kickstart
+- 기존 사용자 LaunchAgent 기반 llama job 을 disable + bootout 처리해 자동 로그인 이후에도 중복 실행 방지
+- system domain 에 bootstrap 후 즉시 kickstart
 
 중요한 제한:
 
-- 현재 `com.aiassistant.stack` 는 Docker Desktop에 의존하므로 LaunchDaemon으로 옮기지 않는다.
-- 완전 무인 부팅 후 Docker stack까지 자동 복구하려면 다음 중 하나가 필요하다.
-	- macOS 자동 로그인 유지
-	- Docker Desktop 대신 headless Docker Engine 계열 런타임 사용
+- 현재 `com.aiassistant.stack` 는 Docker Desktop 에 의존하므로 LaunchDaemon 으로 옮기지 않는다.
+- 완전 무인 부팅 후 Docker stack 까지 자동 복구하려면 다음 중 하나가 필요하다.
+- macOS 자동 로그인 유지
+- Docker Desktop 대신 headless Docker Engine 계열 런타임 사용
 
 ## 재부팅 후 자동 시작 순서
 
 로그인 세션이 열리면 launchd가 아래 순서를 사실상 병렬에 가깝게 시작한다.
 
-1. `com.aiassistant.mlx-base-server`
-2. `com.aiassistant.mlx-webui-proxy`
-3. `com.aiassistant.stack`
-
-Gemma sidecar 는 기본 자동 시작 대상이 아니다. 필요할 때만 별도 명령으로 올린다.
+1. `com.aiassistant.llama-lfm2-server`
+2. `com.aiassistant.stack`
 
 `com.aiassistant.stack` 는 내부적으로 아래 순서로 동작한다.
 
@@ -150,38 +112,24 @@ Gemma sidecar 는 기본 자동 시작 대상이 아니다. 필요할 때만 별
 infra/scripts/install-launchd-services.sh
 ```
 
-Gemma LaunchAgent 까지 같이 재적용하려면:
-
-```bash
-infra/scripts/install-launchd-services.sh --with-gemma
-```
-
-### 1-1. MLX LaunchDaemon 경로 수동 재적용
+### 2. LaunchDaemon 경로 수동 재적용
 
 ```bash
 sudo infra/scripts/install-launchd-daemons.sh
 ```
 
-Gemma daemon 까지 같이 설치하고 즉시 기동하려면 아래처럼 실행한다.
-
-```bash
-sudo infra/scripts/install-launchd-daemons.sh --with-gemma
-```
-
 `assistant.sh` 래퍼를 쓰는 경우는 아래 명령으로 같다.
 
 ```bash
-./assistant.sh launchd install-gemma
-sudo ./assistant.sh launchd install-daemon-gemma
+./assistant.sh launchd install
+sudo ./assistant.sh launchd install-daemon
 ```
 
-### 2. Docker Compose core stack만 수동 시작
+### 3. Docker Compose core stack만 수동 시작
 
 ```bash
 infra/scripts/start-assistant-stack.sh
 ```
-
-이 스크립트는 `/Volumes/ExtData/ai-assistant` 아래 필요한 bind mount 디렉토리를 자동으로 생성한다.
 
 특정 서비스만 시작할 수도 있다.
 
@@ -189,205 +137,49 @@ infra/scripts/start-assistant-stack.sh
 infra/scripts/start-assistant-stack.sh api worker
 ```
 
-### 3. Guacamole remote desktop만 수동 시작
+### 4. llama.cpp launchd만 수동 재시작
+
+```bash
+infra/scripts/start-llama-services.sh
+sudo infra/scripts/start-llama-services.sh
+```
+
+### 5. llama.cpp 상태 확인
+
+```bash
+infra/scripts/status-llama-services.sh
+sudo infra/scripts/status-llama-services.sh
+curl -sS http://127.0.0.1:1242/v1/models
+```
+
+### 6. llama.cpp 중지
+
+```bash
+infra/scripts/stop-llama-services.sh
+sudo infra/scripts/stop-llama-services.sh
+```
+
+### 7. llama.cpp launchd 등록 제거
+
+```bash
+infra/scripts/uninstall-llama-services.sh
+sudo infra/scripts/uninstall-llama-services.sh
+```
+
+## 원격 운영 관련
+
+Guacamole remote desktop 및 Tailscale Serve 운영은 기존과 동일하다.
 
 ```bash
 infra/scripts/start-remote-desktop.sh
-```
-
-이 스크립트는 현재 셸에 남아 있는 `GUACAMOLE_*` 환경변수를 비운 뒤 `.env` 기준으로 `remote-desktop` 프로필만 올린다.
-
-### 4. Tailscale Serve HTTPS 시작
-
-```bash
 infra/scripts/start-tailscale-serve.sh
 ```
 
-이 스크립트는 tailnet 내부에서 `https://<tailscale-host>/` 로 호스트 `80` 포트를 HTTPS 프록시한다.
-
-### 5. MLX launchd만 수동 재시작
-
-```bash
-infra/scripts/start-mlx-services.sh
-```
-
-non-sudo 실행에서는 이미 system LaunchDaemon으로 관리되는 label을 다시 LaunchAgent로 만들거나 중복 기동하지 않는다. 이 경우 user mode는 daemon-backed label을 건너뛰고, user-managed label만 시작한다.
-
-LaunchDaemon 경로를 쓰는 경우:
-
-```bash
-sudo launchctl kickstart -k system/com.aiassistant.mlx-base-server.daemon
-sudo launchctl kickstart -k system/com.aiassistant.mlx-webui-proxy.daemon
-```
-
-Gemma sidecar 는 별도로 재시작한다.
-
-```bash
-infra/scripts/start-mlx-services.sh gemma
-sudo infra/scripts/start-mlx-services.sh gemma
-```
-
-### 5-1. MLX 상태 확인
-
-```bash
-infra/scripts/status-mlx-services.sh
-infra/scripts/status-mlx-services.sh gemma
-infra/scripts/status-mlx-services.sh all
-```
-
-`sudo` 로 상태를 확인할 때도 현재 로그인 사용자의 `~/Library/LaunchAgents` 기준으로 agent 설치 상태를 보여준다.
-
-### 6. MLX launchd만 수동 중지
-
-```bash
-infra/scripts/stop-mlx-services.sh
-```
-
-Gemma sidecar 만 중지하려면:
-
-```bash
-infra/scripts/stop-mlx-services.sh gemma
-sudo infra/scripts/stop-mlx-services.sh gemma
-```
-
-LaunchDaemon 경로까지 함께 중지하려면:
-
-```bash
-sudo infra/scripts/stop-mlx-services.sh
-```
-
-### 7. MLX launchd 등록 제거
-
-```bash
-infra/scripts/uninstall-mlx-services.sh
-```
-
-Gemma sidecar 만 제거하려면:
-
-```bash
-infra/scripts/uninstall-mlx-services.sh gemma
-sudo infra/scripts/uninstall-mlx-services.sh gemma
-```
-
-boot-time LaunchDaemon 제거까지 포함하려면:
-
-```bash
-sudo infra/scripts/uninstall-mlx-services.sh
-```
-
-## 수동 중지 방법
-
-### 1. Docker Compose core stack 중지
-
-```bash
-infra/scripts/stop-assistant-stack.sh
-```
-
-특정 서비스만 중지할 수도 있다.
-
-```bash
-infra/scripts/stop-assistant-stack.sh api worker
-```
-
-### 2. Guacamole remote desktop 중지
-
-```bash
-infra/scripts/stop-remote-desktop.sh
-```
-
-### 3. Tailscale Serve HTTPS 중지
-
-```bash
-infra/scripts/stop-tailscale-serve.sh
-```
-
-### 4. launchd job 해제
-
-```bash
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.aiassistant.stack.plist
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.aiassistant.mlx-base-server.plist
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.aiassistant.mlx-webui-proxy.plist
-```
-
-## 상태 확인
-
-빠른 운영 확인:
+## 운영 점검 명령
 
 ```bash
 infra/scripts/status-assistant-services.sh
-infra/scripts/status-remote-desktop.sh
-infra/scripts/status-tailscale-serve.sh
 infra/scripts/status-24x7-readiness.sh
-```
-
-수동 확인:
-
-```bash
 docker compose --env-file .env -f infra/docker/docker-compose.yml ps
-curl -sS http://127.0.0.1:1235/v1/models
-curl -sS http://127.0.0.1:1236/v1/models
-curl -sS http://127.0.0.1/assistant/api/health
+curl -sS http://127.0.0.1:1242/v1/models
 ```
-
-2026-03-22 기준 추가 실검증 결과:
-
-- `docker compose -f infra/docker/docker-compose.yml up -d --build api` 재빌드 후 `api` 컨테이너는 정상 기동했다.
-- `GET /assistant/api/health` 는 `status=ok`, `database_status=ok` 를 반환했다.
-- `POST /assistant/api/chat` 과 `POST /assistant/api/kakao/webhook` 는 프록시 경유 응답이 정상이다.
-- 일정 생성 승인 요청은 티켓 발급과 `POST /assistant/api/actions/approve` 까지 정상이나, 실제 실행은 `route=n8n_fallback` 으로 내려갔다.
-- 같은 시점 direct webhook 호출 `POST http://localhost:5678/webhook/assistant-calendar-create` 는 `200 OK` 이지만 body가 비어 있었다.
-- 이후 n8n event log 와 SQLite execution 기록을 확인한 결과, live `assistant-calendar-create` workflow 는 실제로 실행되지만 `Create Calendar Event` 노드에서 `Google Calendar account` OAuth credential 의 authorization grant 또는 refresh token 이 invalid/expired/revoked 상태라 실패했다.
-- 저장소의 `assistant-calendar-create`, `assistant-calendar-update`, `assistant-calendar-delete` workflow JSON 은 먼저 `continueErrorOutput` 브랜치 기준으로, 이후 `continueOnFail + If` 기준으로도 보강해 live n8n SQLite 에 반영했다.
-- 하지만 현재 live `n8nio/n8n:2.12.3` + `Google Calendar` node 조합에서는 credential 만료 오류 시에도 direct webhook body 가 계속 비어 있으므로, API fallback 응답에서 `Google Calendar account` credential 재연결 안내를 명시적으로 반환하도록 서버 쪽도 보강했다.
-- 같은 날 후속 점검에서는 credential 문제와 별개로 ExtData 기반 n8n 저장소가 `Error while saving insights metadata and raw data`, `SQLITE_NOTADB`, `SQLITE_IOERR` 를 일으켜 direct webhook 자체가 500으로 무너지는 상태도 확인됐다.
-- 이 경우 compose 설정 경로는 이미 `/Volumes/ExtData/ai-assistant/docker/n8n` 으로 맞았지만, SQLite reset 뒤에도 첫 write webhook 에서 `SQLITE_IOERR` 가 재발했다.
-- 그래서 현재 기준 근본 복구 절차는 n8n 메타데이터 DB를 PostgreSQL로 전환하고, ExtData의 `.n8n` 디렉터리는 파일성 상태만 유지하는 것이다.
-- 이후 Gmail credential 재연결 뒤에는 `assistant-gmail-summary`, `assistant-gmail-detail`, `assistant-gmail-draft`, `assistant-gmail-send`, `assistant-gmail-reply` workflow 를 새 credential ID 기준으로 다시 import/publish 해야 정상 실행되는 것도 확인했다.
-- 2026-03-22 최종 재검증에서는 direct webhook 과 API approval 경로 기준으로 Gmail summary, detail, draft, send, reply 가 모두 `route=n8n` 또는 해당 direct 성공 응답으로 복구됐다.
-
-운영 해석:
-
-- FastAPI runtime skill 경로와 프록시 경로는 정상이다.
-- 현재 우선 복구 대상은 ExtData 기반 n8n SQLite 의존을 제거하고 PostgreSQL 기반으로 재기동하는 것이다.
-- 저장소 재초기화 후에는 `Google Calendar account` 와 Gmail credential 을 n8n UI 에서 다시 연결해야 한다.
-- 저장소 workflow 수정만으로는 live SQLite workflow 에 자동 반영되지 않으므로, import 또는 수동 편집 후 다시 활성화해야 한다.
-- Gmail credential 을 다시 만들면 이름이 같아도 내부 ID는 바뀌므로, workflow credential reference 재반영이 필요하다.
-- 현 시점 사용자 영향 기준 최종 동작은 다음과 같다: approval API는 정상이며, n8n DB가 PostgreSQL로 올라오기 전까지는 calendar 승인 실행이 direct webhook 500 또는 fallback 안내로 끝날 수 있다.
-
-## 로그 경로
-
-- stack launchd 표준 로그: `/tmp/aiassistant-stack.log`
-- stack launchd 오류 로그: `/tmp/aiassistant-stack.err.log`
-- MLX base 표준 로그: `/tmp/aiassistant-mlx-base-server.log`
-- MLX base 오류 로그: `/tmp/aiassistant-mlx-base-server.err.log`
-- WebUI proxy 표준 로그: `/tmp/aiassistant-mlx-webui-proxy.log`
-- WebUI proxy 오류 로그: `/tmp/aiassistant-mlx-webui-proxy.err.log`
-
-예시:
-
-```bash
-tail -n 50 /tmp/aiassistant-stack.err.log
-tail -n 50 /tmp/aiassistant-stack.log
-```
-
-## 운영 메모
-
-- `com.aiassistant.stack` 는 로그인 세션 기준 LaunchAgent 이므로, macOS 부팅 직후 무인 상태가 아니라 사용자 로그인 이후에 실행된다.
-- 반대로 `com.aiassistant.mlx-base-server.daemon`, `com.aiassistant.mlx-webui-proxy.daemon` 는 로그인 없이도 부팅 시점부터 시작되도록 구성할 수 있다.
-- Docker Desktop 자체의 로그인 자동 실행을 켜 두면 compose stack 시작 시간이 더 짧아진다.
-- edge profile인 `cloudflared` 와 automation profile인 `browser-runner` 는 기본 자동 시작 대상에서 제외했다.
-- Tailscale Serve는 Docker Compose가 아니라 host Tailscale 설정이므로 별도 스크립트로 관리한다.
-- 필요 시 `AI_ASSISTANT_ENABLE_EDGE_PROFILE=true` 또는 `AI_ASSISTANT_ENABLE_AUTOMATION_PROFILE=true` 를 stack launchd plist 환경변수에 추가해 자동 시작 범위를 넓힐 수 있다.
-
-## 24시간 운영 체크리스트
-
-1. 전원 어댑터 연결 상태에서 `sleep=0`, `disksleep=0`, `autorestart=1` 기준으로 조정한다.
-2. 디스플레이만 끄고 본체 잠자기는 끄는 방식으로 운영한다.
-3. Docker Desktop 자동 실행을 켠다.
-4. MLX 계열은 `sudo infra/scripts/install-launchd-daemons.sh` 로 LaunchDaemon 전환을 적용한다.
-5. Tailscale 로그인 상태와 `infra/scripts/status-tailscale-serve.sh` 결과를 확인한다.
-6. `infra/scripts/start-tailscale-serve.sh` 로 tailnet HTTPS를 활성화한다.
-7. `infra/scripts/status-24x7-readiness.sh` 로 전원, Tailscale, MLX, Docker 상태를 한 번에 확인한다.
-8. 정전 복구를 대비해 가능하면 UPS를 사용한다.
-9. 재부팅 1회 테스트로 MLX daemon, Docker stack, Tailscale Serve 복구 순서를 실제 검증한다.
-10. 완전 무인 운영이 필요하면 Docker Desktop 의존을 줄이거나 macOS 자동 로그인을 유지한다.

@@ -13,11 +13,6 @@ TARGET_DIR="/Library/LaunchDaemons"
 TARGET_USER="${SUDO_USER:-byoungyoungla}"
 TARGET_UID="$(id -u "$TARGET_USER")"
 TARGET_HOME="$(dscl . -read "/Users/$TARGET_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
-INSTALL_GEMMA=0
-
-if [[ "${1:-}" == "--with-gemma" ]]; then
-  INSTALL_GEMMA=1
-fi
 
 if [[ -z "$TARGET_HOME" ]]; then
   TARGET_HOME="/Users/$TARGET_USER"
@@ -25,25 +20,21 @@ fi
 
 LOCAL_SCRIPT_DIR="$TARGET_HOME/.aiassistant-launchd-scripts"
 
-wait_for_endpoints() {
-  local port
+wait_for_endpoint() {
+  local port="$1"
   local attempt
 
-  for port in "$@"; do
-    for attempt in {1..20}; do
-      if curl -fsS "http://127.0.0.1:$port/v1/models" >/dev/null 2>&1; then
-        echo "Endpoint $port ready"
-        break
-      fi
+  for attempt in {1..20}; do
+    if curl -fsS "http://127.0.0.1:$port/v1/models" >/dev/null 2>&1; then
+      echo "Endpoint $port ready"
+      return 0
+    fi
 
-      if [[ $attempt -eq 20 ]]; then
-        echo "Endpoint $port did not become ready yet" >&2
-        break
-      fi
-
-      sleep 1
-    done
+    sleep 1
   done
+
+  echo "Endpoint $port did not become ready yet" >&2
+  return 1
 }
 
 plist_set_string() {
@@ -56,25 +47,11 @@ plist_set_string() {
 }
 
 rewrite_daemon_plist_for_current_layout() {
-  local plist_name="$1"
-  local plist_path="$2"
+  local plist_path="$1"
 
-  case "$plist_name" in
-    com.aiassistant.mlx-base-server.daemon.plist)
-      plist_set_string "$plist_path" ":ProgramArguments:0" "/bin/zsh"
-      plist_set_string "$plist_path" ":ProgramArguments:1" "-lc"
-      plist_set_string "$plist_path" ":ProgramArguments:2" "$LOCAL_SCRIPT_DIR/start-mlx-base-server.sh"
-      ;;
-    com.aiassistant.mlx-gemma-server.daemon.plist)
-      plist_set_string "$plist_path" ":ProgramArguments:0" "/bin/zsh"
-      plist_set_string "$plist_path" ":ProgramArguments:1" "-lc"
-      plist_set_string "$plist_path" ":ProgramArguments:2" "$LOCAL_SCRIPT_DIR/start-mlx-base-server.sh"
-      ;;
-    com.aiassistant.mlx-webui-proxy.daemon.plist)
-      plist_set_string "$plist_path" ":ProgramArguments:2" "$LOCAL_SCRIPT_DIR/start-mlx-webui-proxy.sh"
-      ;;
-  esac
-
+  plist_set_string "$plist_path" ":ProgramArguments:0" "/bin/zsh"
+  plist_set_string "$plist_path" ":ProgramArguments:1" "-lc"
+  plist_set_string "$plist_path" ":ProgramArguments:2" "$LOCAL_SCRIPT_DIR/start-llama-cpp-lfm2-server.sh"
   plist_set_string "$plist_path" ":UserName" "$TARGET_USER"
   plist_set_string "$plist_path" ":WorkingDirectory" "$ROOT_DIR"
   plist_set_string "$plist_path" ":EnvironmentVariables:HOME" "$TARGET_HOME"
@@ -82,78 +59,30 @@ rewrite_daemon_plist_for_current_layout() {
   plist_set_string "$plist_path" ":EnvironmentVariables:AI_ASSISTANT_ROOT_DIR" "$ROOT_DIR"
 }
 
-daemon_plists=(
-  com.aiassistant.mlx-base-server.daemon.plist
-  com.aiassistant.mlx-webui-proxy.daemon.plist
-)
+mkdir -p "$TARGET_DIR" "$LOCAL_SCRIPT_DIR"
+cp "$ROOT_DIR/infra/scripts/start-llama-cpp-lfm2-server.sh" "$LOCAL_SCRIPT_DIR/start-llama-cpp-lfm2-server.sh"
+chown "$TARGET_USER":staff "$LOCAL_SCRIPT_DIR/start-llama-cpp-lfm2-server.sh"
+chmod 755 "$LOCAL_SCRIPT_DIR/start-llama-cpp-lfm2-server.sh"
 
-endpoint_ports=(1235 1236)
-
-if [[ $INSTALL_GEMMA -eq 1 ]]; then
-  daemon_plists+=(com.aiassistant.mlx-gemma-server.daemon.plist)
-  endpoint_ports+=(1240)
+launchctl disable "gui/$TARGET_UID/com.aiassistant.llama-lfm2-server" >/dev/null 2>&1 || true
+launchctl bootout "gui/$TARGET_UID/com.aiassistant.llama-lfm2-server" >/dev/null 2>&1 || true
+if [[ -f "$TARGET_HOME/Library/LaunchAgents/com.aiassistant.llama-lfm2-server.plist" ]]; then
+  launchctl bootout "gui/$TARGET_UID" "$TARGET_HOME/Library/LaunchAgents/com.aiassistant.llama-lfm2-server.plist" >/dev/null 2>&1 || true
 fi
 
-gui_plists=(
-  com.aiassistant.mlx-base-server.plist
-  com.aiassistant.mlx-gemma-server.plist
-  com.aiassistant.mlx-webui-proxy.plist
-)
+src="$LAUNCHD_DIR/com.aiassistant.llama-lfm2-server.daemon.plist"
+dst="$TARGET_DIR/com.aiassistant.llama-lfm2-server.daemon.plist"
+cp "$src" "$dst"
+rewrite_daemon_plist_for_current_layout "$dst"
+chown root:wheel "$dst"
+chmod 644 "$dst"
+launchctl enable "system/com.aiassistant.llama-lfm2-server.daemon" >/dev/null 2>&1 || true
+launchctl bootout system "$dst" >/dev/null 2>&1 || true
+launchctl bootstrap system "$dst"
+launchctl kickstart -k system/com.aiassistant.llama-lfm2-server.daemon
+launchctl print system/com.aiassistant.llama-lfm2-server.daemon >/dev/null
+wait_for_endpoint 1242 || true
 
-mkdir -p "$TARGET_DIR"
-mkdir -p "$LOCAL_SCRIPT_DIR"
-cp "$ROOT_DIR/infra/scripts/start-mlx-base-server.sh" "$LOCAL_SCRIPT_DIR/start-mlx-base-server.sh"
-cp "$ROOT_DIR/infra/scripts/start-mlx-webui-proxy.sh" "$LOCAL_SCRIPT_DIR/start-mlx-webui-proxy.sh"
-chown "$TARGET_USER":staff "$LOCAL_SCRIPT_DIR/start-mlx-base-server.sh" "$LOCAL_SCRIPT_DIR/start-mlx-webui-proxy.sh"
-chmod 755 "$LOCAL_SCRIPT_DIR/start-mlx-base-server.sh" "$LOCAL_SCRIPT_DIR/start-mlx-webui-proxy.sh"
-
-for plist_name in "${gui_plists[@]}"; do
-  label="${plist_name%.plist}"
-  gui_path="$TARGET_HOME/Library/LaunchAgents/$plist_name"
-  launchctl disable "gui/$TARGET_UID/$label" >/dev/null 2>&1 || true
-  launchctl bootout "gui/$TARGET_UID/$label" >/dev/null 2>&1 || true
-  if [[ -f "$gui_path" ]]; then
-    launchctl bootout "gui/$TARGET_UID" "$gui_path" >/dev/null 2>&1 || true
-  fi
-done
-
-for plist_name in "${daemon_plists[@]}"; do
-  src="$LAUNCHD_DIR/$plist_name"
-  dst="$TARGET_DIR/$plist_name"
-  label="${plist_name%.plist}"
-  cp "$src" "$dst"
-  rewrite_daemon_plist_for_current_layout "$plist_name" "$dst"
-  chown root:wheel "$dst"
-  chmod 644 "$dst"
-  launchctl enable "system/$label" >/dev/null 2>&1 || true
-  launchctl bootout system "$dst" >/dev/null 2>&1 || true
-  launchctl bootstrap system "$dst"
-done
-
-launchctl kickstart -k system/com.aiassistant.mlx-base-server.daemon
-launchctl kickstart -k system/com.aiassistant.mlx-webui-proxy.daemon
-
-if [[ $INSTALL_GEMMA -eq 1 ]]; then
-  launchctl kickstart -k system/com.aiassistant.mlx-gemma-server.daemon
-else
-  launchctl disable system/com.aiassistant.mlx-gemma-server.daemon >/dev/null 2>&1 || true
-  launchctl bootout system /Library/LaunchDaemons/com.aiassistant.mlx-gemma-server.daemon.plist >/dev/null 2>&1 || true
-fi
-
-launchctl print system/com.aiassistant.mlx-base-server.daemon >/dev/null
-launchctl print system/com.aiassistant.mlx-webui-proxy.daemon >/dev/null
-
-if [[ $INSTALL_GEMMA -eq 1 ]]; then
-  launchctl print system/com.aiassistant.mlx-gemma-server.daemon >/dev/null
-fi
-
-wait_for_endpoints "${endpoint_ports[@]}"
-
-echo "Installed MLX LaunchDaemons for boot-time operation."
-if [[ $INSTALL_GEMMA -eq 1 ]]; then
-  echo "Gemma daemon was installed and started."
-else
-  echo "Gemma daemon was skipped. Use 'sudo infra/scripts/install-launchd-daemons.sh --with-gemma' or 'sudo infra/scripts/start-mlx-services.sh gemma' after installing it once if needed."
-fi
-echo "Disabled user LaunchAgents for MLX to prevent duplicate startup after autologin."
+echo "Installed llama.cpp LaunchDaemon for boot-time operation."
+echo "Disabled user LaunchAgent for llama.cpp to prevent duplicate startup after autologin."
 echo "Docker Compose core stack remains a LaunchAgent because Docker Desktop still requires a logged-in GUI session."

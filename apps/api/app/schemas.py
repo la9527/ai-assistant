@@ -199,6 +199,56 @@ class CalendarExtractionPayload(BaseModel):
     timezone: str | None = None
 
 
+class MailQueryDateRange(BaseModel):
+    """Gmail 검색 날짜 범위 — 상대/절대 표현을 구조화."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    relative_days: int | None = Field(default=None, alias="relativeDays")
+    relative_weeks: int | None = Field(default=None, alias="relativeWeeks")
+    start_at: str | None = Field(default=None, alias="startAt")
+    end_at: str | None = Field(default=None, alias="endAt")
+
+
+class MailQueryFilters(BaseModel):
+    """Gmail 검색 필터 — canonical 구조. query string 은 compile 단계에서 파생."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    mailbox_scope: str | None = Field(default=None, alias="mailboxScope")
+    categories: list[str] = Field(default_factory=list)
+    labels_include: list[str] = Field(default_factory=list, alias="labelsInclude")
+    labels_exclude: list[str] = Field(default_factory=list, alias="labelsExclude")
+    sender: str | None = None
+    recipient: str | None = None
+    subject: str | None = None
+    body_keywords: list[str] = Field(default_factory=list, alias="bodyKeywords")
+    free_keywords: list[str] = Field(default_factory=list, alias="freeKeywords")
+    unread_only: bool | None = Field(default=None, alias="unreadOnly")
+    read_only: bool | None = Field(default=None, alias="readOnly")
+    has_attachment: bool | None = Field(default=None, alias="hasAttachment")
+    important_only: bool | None = Field(default=None, alias="importantOnly")
+    starred_only: bool | None = Field(default=None, alias="starredOnly")
+    date_range: MailQueryDateRange | None = Field(default=None, alias="dateRange")
+
+
+class MailSelectionSpec(BaseModel):
+    """메일 선택 사양 — 목록에서 특정 항목을 지정하는 구조."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    selection_mode: str | None = Field(default=None, alias="selectionMode")
+    selected_indexes: list[int] = Field(default_factory=list, alias="selectedIndexes")
+    selected_message_ids: list[str] = Field(default_factory=list, alias="selectedMessageIds")
+    selected_thread_ids: list[str] = Field(default_factory=list, alias="selectedThreadIds")
+
+
+class MailExecutionSafety(BaseModel):
+    """메일 실행 안전 정책 — destructive action 에 대한 preview/snapshot 제어."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    preview_required: bool | None = Field(default=None, alias="previewRequired")
+    snapshot_id: str | None = Field(default=None, alias="snapshotId")
+    max_items: int | None = Field(default=None, alias="maxItems")
+
+
 class MailExtractionPayload(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -218,6 +268,10 @@ class MailExtractionPayload(BaseModel):
     detail_level: str | None = Field(default=None, alias="detailLevel")
     selected_indexes: list[int] = Field(default_factory=list, alias="selectedIndexes")
     attachment_urls: list[str] = Field(default_factory=list, alias="attachmentUrls")
+    # 구조화 필터 (단기 확장 — 기존 searchQuery 와 공존)
+    filters: MailQueryFilters | None = None
+    selection: MailSelectionSpec | None = None
+    safety: MailExecutionSafety | None = None
 
 
 class BrowserExtractionPayload(BaseModel):

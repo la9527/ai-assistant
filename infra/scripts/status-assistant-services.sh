@@ -7,14 +7,12 @@ COMPOSE_FILE="$ROOT_DIR/infra/docker/docker-compose.yml"
 ENV_FILE="$ROOT_DIR/.env"
 
 echo "== launchd =="
-launchctl list | grep 'com.aiassistant.mlx-' || true
+launchctl list | grep 'com.aiassistant.llama-' || true
 launchctl list | grep 'com.aiassistant.stack' || true
 
 echo
-echo "== mlx endpoints =="
-curl -fsS http://127.0.0.1:1235/v1/models >/dev/null && echo "1235 ok" || echo "1235 unavailable"
-curl -fsS http://127.0.0.1:1240/v1/models >/dev/null && echo "1240 ok" || echo "1240 unavailable"
-curl -fsS http://127.0.0.1:1236/v1/models >/dev/null && echo "1236 ok" || echo "1236 unavailable"
+echo "== llama.cpp endpoint =="
+curl -fsS http://127.0.0.1:1242/v1/models >/dev/null && echo "1242 ok" || echo "1242 unavailable"
 
 echo
 echo "== docker compose =="

@@ -81,6 +81,9 @@ def match_skills_by_keywords(message: str) -> list[tuple[SkillDescriptor, float]
         matched = sum(1 for kw in skill.trigger_keywords if kw.lower() in lowered)
         if matched == 0:
             continue
+        # 파괴적 스킬(high/medium)은 단일 키워드만으로 매칭하지 않는다 (오탐 방지).
+        if matched < 2 and skill.risk_level in ("high", "medium"):
+            continue
         # 절대 매칭 횟수를 기본 점수로 사용하고, 비율을 보조 점수로 활용한다.
         ratio = matched / max(len(skill.trigger_keywords), 1)
         score = matched + ratio

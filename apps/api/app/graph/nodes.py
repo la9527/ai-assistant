@@ -1,4 +1,8 @@
-"""LangGraph 노드 함수 — 기존 automation.py 로직을 노드 단위로 분리."""
+"""LangGraph 노드 함수 — 기존 automation.py 로직을 노드 단위로 분리.
+
+모든 도메인별 실행(Gmail, Calendar, macOS 등)은 skill registry 기반
+execute_skill 노드를 통해 수행된다. 개별 execute_* 노드는 사용하지 않는다.
+"""
 
 from __future__ import annotations
 
@@ -11,21 +15,8 @@ from app.automation import (
 )
 from app.config import settings
 from app.graph.state import AssistantState
-from app.llm import format_gmail_action_reply, format_gmail_detail, format_gmail_summary, generate_external_reply, generate_local_reply
+from app.llm import generate_external_reply, generate_local_reply
 from app.skills.registry import get_skill_runtime
-
-
-def _build_mail_result_context(raw_body: dict, items: list[dict], *, mode: str, selected_item: dict | None = None) -> dict:
-    return {
-        "mode": mode,
-        "query": raw_body.get("query") or raw_body.get("searchQuery") or "",
-        "items": items,
-        "hasMore": bool(raw_body.get("hasMore")),
-        "nextCursor": raw_body.get("nextCursor"),
-        "groupByDate": bool(raw_body.get("groupByDate")),
-        "selectedMessageId": (selected_item or {}).get("messageId") or (selected_item or {}).get("message_id"),
-        "selectedThreadId": (selected_item or {}).get("threadId") or (selected_item or {}).get("thread_id"),
-    }
 
 
 def _generate_reply_with_external_fallback(
@@ -49,17 +40,6 @@ def _generate_reply_with_external_fallback(
             return reply, route
     return generate_local_reply(message, channel, memory_context)
 
-
-def _build_calendar_n8n_failure_reply(intent: str) -> str:
-    action_label = {
-        "calendar_create": "생성",
-        "calendar_update": "변경",
-        "calendar_delete": "삭제",
-    }.get(intent, "처리")
-    return (
-        f"Google Calendar 연결이 만료되었거나 n8n workflow 응답이 비정상이라 일정 {action_label}을 완료하지 못했습니다. "
-        "n8n의 Google Calendar account credential을 다시 연결한 뒤 다시 시도해 주세요."
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -146,200 +126,6 @@ def execute_skill(state: AssistantState) -> dict:
 # 4. execute — 실행 노드들
 # ---------------------------------------------------------------------------
 
-def execute_calendar_summary(state: AssistantState) -> dict:
-    message, channel = state["message"], state.get("channel", "")
-    session_id, user_id = state.get("session_id", ""), state.get("user_id")
-    memory_context = state.get("memory_context")
-    extraction = state.get("extraction")
-
-    extra_payload: dict[str, str] | None = None
-    if extraction and extraction.calendar:
-        cal = extraction.calendar
-        extra = {}
-        if cal.search_time_min:
-            extra["searchTimeMin"] = cal.search_time_min
-        if cal.search_time_max:
-            extra["searchTimeMax"] = cal.search_time_max
-        if cal.search_title:
-            extra["searchTitle"] = cal.search_title
-        if extra:
-            extra_payload = extra
-
-    if settings.n8n_webhook_path:
-        reply = run_n8n_automation(message, channel, session_id, user_id, settings.n8n_webhook_path, extra_payload)
-        if reply is not None:
-            return {"reply": reply, "route": "n8n", "action_type": None}
-    fallback_reply, fallback_route = _generate_reply_with_external_fallback(message, channel, memory_context)
-    return {"reply": fallback_reply, "route": fallback_route, "action_type": None}
-
-
-def execute_calendar_write(state: AssistantState) -> dict:
-    intent = state["intent"]
-    message, channel = state["message"], state.get("channel", "")
-    session_id, user_id = state.get("session_id", ""), state.get("user_id")
-    parsed = state.get("parsed_params")
-
-    webhook_path = {
-        "calendar_create": settings.n8n_calendar_create_webhook_path,
-        "calendar_update": settings.n8n_calendar_update_webhook_path,
-        "calendar_delete": settings.n8n_calendar_delete_webhook_path,
-    }[intent]
-    reply = run_n8n_automation(message, channel, session_id, user_id, webhook_path, parsed)
-    if reply is not None:
-        return {"reply": format_gmail_action_reply(reply, channel), "route": "n8n", "action_type": intent}
-    return {
-        "reply": _build_calendar_n8n_failure_reply(intent),
-        "route": "n8n_fallback",
-        "action_type": intent,
-    }
-
-
-def execute_gmail_compose(state: AssistantState) -> dict:
-    intent = state["intent"]
-    message, channel = state["message"], state.get("channel", "")
-    session_id, user_id = state.get("session_id", ""), state.get("user_id")
-    parsed = state.get("parsed_params")
-
-    webhook_path = (
-        settings.n8n_gmail_draft_webhook_path
-        if intent == "gmail_draft"
-        else settings.n8n_gmail_send_webhook_path
-    )
-    reply = run_n8n_automation(message, channel, session_id, user_id, webhook_path, parsed)
-    if reply is not None:
-        return {"reply": reply, "route": "n8n", "action_type": intent}
-    return {
-        "reply": "승인된 메일 작업 실행에 실패했습니다. n8n Gmail workflow 또는 credential 연결 상태를 확인하세요.",
-        "route": "n8n_fallback",
-        "action_type": intent,
-    }
-
-
-def execute_gmail_reply(state: AssistantState) -> dict:
-    intent = state["intent"]
-    message, channel = state["message"], state.get("channel", "")
-    session_id, user_id = state.get("session_id", ""), state.get("user_id")
-    parsed = state.get("parsed_params")
-
-    reply = run_n8n_automation(message, channel, session_id, user_id, settings.n8n_gmail_reply_webhook_path, parsed)
-    if reply is not None:
-        return {"reply": format_gmail_action_reply(reply, channel), "route": "n8n", "action_type": intent}
-    return {
-        "reply": "승인된 메일 회신 실행에 실패했습니다. n8n Gmail reply workflow 또는 credential 연결 상태를 확인하세요.",
-        "route": "n8n_fallback",
-        "action_type": intent,
-    }
-
-
-def execute_gmail_summary(state: AssistantState) -> dict:
-    message, channel = state["message"], state.get("channel", "")
-    session_id, user_id = state.get("session_id", ""), state.get("user_id")
-    extraction = state.get("extraction")
-
-    extra_payload: dict[str, str] | None = None
-    if extraction and extraction.mail:
-        mail = extraction.mail
-        extra: dict[str, str] = {}
-        if mail.search_query:
-            extra["searchQuery"] = mail.search_query
-        if mail.limit:
-            extra["limit"] = str(mail.limit)
-        if mail.cursor:
-            extra["cursor"] = mail.cursor
-        if mail.group_by_date is not None:
-            extra["groupByDate"] = "true" if mail.group_by_date else "false"
-        if extra:
-            extra_payload = extra
-
-    if settings.n8n_gmail_webhook_path:
-        raw_body = run_n8n_automation_raw(
-            message, channel, session_id, user_id,
-            settings.n8n_gmail_webhook_path, extra_payload,
-        )
-        if raw_body is not None:
-            reply = format_gmail_summary(raw_body, channel)
-            # n8n items를 후보 목록으로 저장 (후속 참조 대화 지원)
-            items = raw_body.get("items") or []
-            candidates = [
-                {
-                    "index": i,
-                    "label": item.get("subject", ""),
-                    "raw": f"{item.get('sender', '')} - {item.get('subject', '')}",
-                    "sender": item.get("sender", ""),
-                    "snippet": item.get("snippet", ""),
-                    "date": item.get("date", ""),
-                    "message_id": item.get("messageId") or item.get("message_id") or item.get("id", ""),
-                    "thread_id": item.get("threadId") or item.get("thread_id") or "",
-                }
-                for i, item in enumerate(items)
-            ] if len(items) >= 2 else []
-            return {
-                "reply": reply,
-                "route": "n8n",
-                "action_type": None,
-                "last_candidates": candidates or None,
-                "mail_result_context": _build_mail_result_context(raw_body, items, mode="list"),
-            }
-    return {
-        "reply": "Gmail 자동화를 실행하지 못했습니다. n8n Gmail credential 연결 상태를 확인하세요.",
-        "route": "n8n_fallback",
-        "action_type": None,
-    }
-
-
-def execute_gmail_detail(state: AssistantState) -> dict:
-    message, channel = state["message"], state.get("channel", "")
-    session_id, user_id = state.get("session_id", ""), state.get("user_id")
-    parsed = state.get("parsed_params")
-
-    if not settings.n8n_gmail_detail_webhook_path:
-        return {
-            "reply": "Gmail 상세 조회 workflow 경로가 설정되지 않았습니다. N8N_GMAIL_DETAIL_WEBHOOK_PATH를 확인하세요.",
-            "route": "n8n_fallback",
-            "action_type": None,
-        }
-
-    raw_body = run_n8n_automation_raw(
-        message,
-        channel,
-        session_id,
-        user_id,
-        settings.n8n_gmail_detail_webhook_path,
-        parsed,
-    )
-    if raw_body is not None:
-        reply = format_gmail_detail(raw_body, channel)
-        selected_item = {
-            "messageId": raw_body.get("messageId") or raw_body.get("message_id"),
-            "threadId": raw_body.get("threadId") or raw_body.get("thread_id"),
-        }
-        return {
-            "reply": reply,
-            "route": "n8n",
-            "action_type": None,
-            "mail_result_context": _build_mail_result_context(raw_body, [], mode="detail", selected_item=selected_item),
-        }
-    return {
-        "reply": "Gmail 상세 조회를 실행하지 못했습니다. n8n workflow 또는 Gmail credential 상태를 확인하세요.",
-        "route": "n8n_fallback",
-        "action_type": None,
-    }
-
-
-def execute_macos_note(state: AssistantState) -> dict:
-    message, channel = state["message"], state.get("channel", "")
-    session_id, user_id = state.get("session_id", ""), state.get("user_id")
-    parsed = state.get("parsed_params")
-
-    reply = run_macos_automation(message, channel, session_id, user_id, "macos/notes", parsed)
-    if reply is not None:
-        return {"reply": reply, "route": "macos", "action_type": "macos_note_create"}
-    return {
-        "reply": "승인된 macOS 메모 실행에 실패했습니다. 호스트 macOS runner 실행 상태와 Notes 자동화 권한을 확인하세요.",
-        "route": "macos_fallback",
-        "action_type": "macos_note_create",
-    }
-
 
 def execute_chat(state: AssistantState) -> dict:
     message, channel = state["message"], state.get("channel", "")
@@ -399,76 +185,6 @@ def execute_mcp_tool(state: AssistantState) -> dict:
             "route": "mcp_error",
             "action_type": intent,
         }
-
-
-def execute_macos_reminder(state: AssistantState) -> dict:
-    message, channel = state["message"], state.get("channel", "")
-    session_id, user_id = state.get("session_id", ""), state.get("user_id")
-    parsed = state.get("parsed_params")
-
-    reply = run_macos_automation(message, channel, session_id, user_id, "macos/reminders", parsed)
-    if reply is not None:
-        return {"reply": reply, "route": "macos", "action_type": "macos_reminder_create"}
-    return {
-        "reply": "macOS 미리알림 실행에 실패했습니다. macOS runner 실행 상태를 확인하세요.",
-        "route": "macos_fallback",
-        "action_type": "macos_reminder_create",
-    }
-
-
-def execute_macos_volume_get(state: AssistantState) -> dict:
-    reply = run_macos_get("macos/system/volume")
-    if reply is not None:
-        return {"reply": reply, "route": "macos", "action_type": "macos_volume_get"}
-    return {
-        "reply": "macOS 볼륨 확인에 실패했습니다. macOS runner 실행 상태를 확인하세요.",
-        "route": "macos_fallback",
-        "action_type": "macos_volume_get",
-    }
-
-
-def execute_macos_volume_set(state: AssistantState) -> dict:
-    message, channel = state["message"], state.get("channel", "")
-    session_id, user_id = state.get("session_id", ""), state.get("user_id")
-    parsed = state.get("parsed_params")
-
-    reply = run_macos_automation(message, channel, session_id, user_id, "macos/system/volume", parsed)
-    if reply is not None:
-        return {"reply": reply, "route": "macos", "action_type": "macos_volume_set"}
-    return {
-        "reply": "macOS 볼륨 변경에 실패했습니다. macOS runner 실행 상태를 확인하세요.",
-        "route": "macos_fallback",
-        "action_type": "macos_volume_set",
-    }
-
-
-def execute_macos_darkmode(state: AssistantState) -> dict:
-    message, channel = state["message"], state.get("channel", "")
-    session_id, user_id = state.get("session_id", ""), state.get("user_id")
-
-    reply = run_macos_automation(message, channel, session_id, user_id, "macos/system/darkmode", {})
-    if reply is not None:
-        return {"reply": reply, "route": "macos", "action_type": "macos_darkmode_toggle"}
-    return {
-        "reply": "macOS 다크모드 전환에 실패했습니다. macOS runner 실행 상태를 확인하세요.",
-        "route": "macos_fallback",
-        "action_type": "macos_darkmode_toggle",
-    }
-
-
-def execute_macos_finder(state: AssistantState) -> dict:
-    message, channel = state["message"], state.get("channel", "")
-    session_id, user_id = state.get("session_id", ""), state.get("user_id")
-    parsed = state.get("parsed_params")
-
-    reply = run_macos_automation(message, channel, session_id, user_id, "macos/finder/open", parsed)
-    if reply is not None:
-        return {"reply": reply, "route": "macos", "action_type": "macos_finder_open"}
-    return {
-        "reply": "Finder 폴더 열기에 실패했습니다. macOS runner 실행 상태를 확인하세요.",
-        "route": "macos_fallback",
-        "action_type": "macos_finder_open",
-    }
 
 
 def execute_web_search(state: AssistantState) -> dict:

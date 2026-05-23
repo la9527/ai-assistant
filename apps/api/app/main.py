@@ -870,9 +870,10 @@ def _build_structured_payload(
     history: list[dict[str, str]] | None = None,
     previous_extraction: StructuredExtraction | None = None,
     last_candidates: list[dict[str, str]] | None = None,
+    last_mail_result_context: dict | None = None,
 ) -> StructuredExtraction:
     extraction = extract_structured_request(message, channel, history)
-    return apply_reference_context(extraction, previous_extraction, last_candidates)
+    return apply_reference_context(extraction, previous_extraction, last_candidates, last_mail_result_context)
 
 
 def _load_previous_extraction(db: Session, session_id: str) -> StructuredExtraction | None:
@@ -891,6 +892,14 @@ def _load_last_candidates(db: Session, session_id: str) -> list[dict[str, str]] 
     if state is None or not state.last_candidates:
         return None
     return state.last_candidates
+
+
+def _load_last_mail_result_context(db: Session, session_id: str) -> dict | None:
+    state = get_session_state(db, session_id)
+    if state is None or not isinstance(state.state_data, dict):
+        return None
+    context = state.state_data.get("last_mail_result_context")
+    return context if isinstance(context, dict) else None
 
 
 def _match_pending_ticket_command(db: Session, session_id: str, message: str) -> tuple[str, str] | None:
@@ -1013,6 +1022,7 @@ def _process_kakao_message(
         _session_history_context(db, session.id),
         _load_previous_extraction(db, session.id),
         last_candidates=_load_last_candidates(db, session.id),
+        last_mail_result_context=_load_last_mail_result_context(db, session.id),
     )
     memory_context = _load_user_memory_context(db, internal_user_id)
     _record_user_message(db, session, "kakao", utterance, structured)
@@ -1037,7 +1047,7 @@ def _process_kakao_message(
         )
         approval_ticket_id = ticket.id
         reply = f"{result['reply']}\n티켓: {ticket.id}"
-    else:
+        last_mail_result_context=_load_last_mail_result_context(db, session.id),
         create_task_run(db, session_id=session.id, task_type=str(result["route"]), detail=utterance)
         reply = str(result["reply"])
 
@@ -1377,6 +1387,7 @@ def _chat_impl(payload: ChatRequest, db: Session, *, provider_hint: str | None =
         _session_history_context(db, session.id),
         _load_previous_extraction(db, session.id),
         last_candidates=_load_last_candidates(db, session.id),
+        last_mail_result_context=_load_last_mail_result_context(db, session.id),
     )
     _record_user_message(db, session, payload.channel, payload.message, structured)
 
@@ -2164,6 +2175,7 @@ def _execute_pending_ticket(ticket: ApprovalTicket, db: Session) -> tuple[str | 
             _session_history_context(db, session.id),
             _load_previous_extraction(db, session.id),
             last_candidates=_load_last_candidates(db, session.id),
+            last_mail_result_context=_load_last_mail_result_context(db, session.id),
         ),
         memory_context=_load_user_memory_context(db, session.user_id),
     )
@@ -2205,6 +2217,7 @@ def _process_slack_message(
         _session_history_context(db, session.id),
         _load_previous_extraction(db, session.id),
         last_candidates=_load_last_candidates(db, session.id),
+        last_mail_result_context=_load_last_mail_result_context(db, session.id),
     )
     memory_context = _load_user_memory_context(db, internal_user_id)
     _record_user_message(db, session, "slack", message, structured)

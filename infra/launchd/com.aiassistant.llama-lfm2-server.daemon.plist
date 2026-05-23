@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.aiassistant.mlx-webui-proxy.daemon</string>
+    <string>com.aiassistant.llama-lfm2-server.daemon</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/env</string>
-        <string>python3</string>
-        <string>/Users/byoungyoungla/AI_Project/AI_Assistant/infra/scripts/start-mlx-webui-proxy.sh</string>
+        <string>/bin/zsh</string>
+        <string>-lc</string>
+        <string>/Users/byoungyoungla/AI_Project/AI_Assistant/infra/scripts/start-llama-cpp-lfm2-server.sh</string>
     </array>
 
     <key>RunAtLoad</key>
@@ -30,20 +30,18 @@
         <string>/Users/byoungyoungla</string>
         <key>PATH</key>
         <string>/Users/byoungyoungla/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-        <key>MLX_WEBUI_PROXY_UPSTREAM</key>
-        <string>http://127.0.0.1:1235</string>
-        <key>MLX_WEBUI_PROXY_HOST</key>
-        <string>0.0.0.0</string>
-        <key>MLX_WEBUI_PROXY_PORT</key>
-        <string>1236</string>
-        <key>MLX_WEBUI_PROXY_MODEL</key>
-        <string>lmstudio-community/LFM2-24B-A2B-MLX-4bit</string>
+        <key>LLAMA_CPP_MODEL_REPO</key>
+        <string>LiquidAI/LFM2-24B-A2B-GGUF:Q4_0</string>
+        <key>LLAMA_CPP_PORT</key>
+        <string>1242</string>
+        <key>LLAMA_CPP_CTX_SIZE</key>
+        <string>131072</string>
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/tmp/aiassistant-mlx-webui-proxy-daemon.log</string>
+    <string>/tmp/aiassistant-llama-lfm2-server-daemon.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/tmp/aiassistant-mlx-webui-proxy-daemon.err.log</string>
+    <string>/tmp/aiassistant-llama-lfm2-server-daemon.err.log</string>
 </dict>
 </plist>

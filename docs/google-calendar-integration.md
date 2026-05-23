@@ -118,9 +118,22 @@ https://www.googleapis.com/auth/calendar.readonly
 ```json
 {
   "reply": "오늘은 10시 팀 미팅, 14시 프로젝트 리뷰 일정이 있습니다.",
-  "action": "calendar-summary"
+  "action": "calendar-summary",
+  "count": 2,
+  "events": [
+    {
+      "event_id": "abc123",
+      "title": "팀 미팅",
+      "start_at": "2026-05-01T10:00:00+09:00",
+      "end_at": "2026-05-01T11:00:00+09:00",
+      "all_day": false,
+      "location": "회의실 A"
+    }
+  ]
 }
 ```
+
+- 내부 consumer 가 conflict check 를 해야 하는 경우 `timeMin`, `timeMax`, `timezone`, `window_label` payload 를 함께 보내면 해당 창 기준으로 같은 `events` 배열이 반환된다.
 
 ## 추천 검증 순서
 

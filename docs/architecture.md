@@ -1381,7 +1381,7 @@ volumes:
 
 - `host.docker.internal` 접근 가능 여부를 macOS 환경에서 실제 검증해야 한다.
 - LM Studio를 사용할 경우 OpenAI 호환 API 포트와 자동 시작 정책을 확인해야 한다.
-- MLX를 사용할 경우 `mlx_lm.server --model <repo> --port <port>` 형태로 호스트에서 OpenAI 호환 HTTP 서버를 띄우고, FastAPI는 `host.docker.internal` 경유로 접근한다.
+- llama.cpp를 사용할 경우 `llama-server --hf-repo <repo>:<quant> --port <port>` 형태로 호스트에서 OpenAI 호환 HTTP 서버를 띄우고, FastAPI는 `host.docker.internal` 경유로 접근한다.
 - AppleScript 실행기는 컨테이너 안이 아니라 호스트 프로세스로 두는 편이 낫다.
 - Playwright는 브라우저 자원 사용량이 커서 API와 같은 컨테이너에 넣지 않는 편이 안전하다.
 - 로그 디렉터리를 컨테이너 데이터와 분리해 디스크 폭주를 막아야 한다.
@@ -1441,8 +1441,7 @@ docs/
 
 현재 기본 운영안에서는 아래 순서를 채택한다.
 
-- launchd `com.aiassistant.mlx-base-server`
-- launchd `com.aiassistant.mlx-webui-proxy`
+- launchd `com.aiassistant.llama-lfm2-server`
 - launchd `com.aiassistant.stack`
 
 `com.aiassistant.stack` 는 Docker Desktop 준비를 기다린 뒤 Compose core stack을 재기동한다.

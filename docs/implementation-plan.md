@@ -60,6 +60,7 @@
 - `assistant-gmail-summary` workflow를 live 메일 요약 흐름으로 교체 완료
 - Gmail 초안 작성과 메일 발송도 승인 기반 workflow로 확장 완료
 - Gmail 회신과 `thread` 이어쓰기 승인 기반 workflow까지 검증 완료
+- Gmail 스레드 조회(`assistant-gmail-thread`) workflow 추가 및 API 후속 조회 흐름 검증 완료
 - Gmail 첨부 URL 1건 다운로드 후 초안, 발송, 회신에 포함하는 흐름 검증 완료
 - Gmail 회신 대상 선택은 제목, 발신자, 최근성 기준 scoring 로직으로 보강 완료
 - Kakao 자동화 응답은 메일 첨부 초안, 첨부 회신 예시 quick reply와 카드 버튼까지 반영 완료
@@ -185,16 +186,15 @@
 - `calendar_delete`, `gmail_reply`, `gmail_thread_reply` 는 recent history와 baseline extraction을 함께 local LLM에 보내 JSON extraction을 먼저 시도한다.
 - 검증된 extraction JSON이 있으면 그 값을 우선 사용하고, 없으면 기존 parser로 안전하게 fallback 한다.
 - message history와 session state를 활용한 후보 선택형 삭제와 참조형 후속 요청 해석이 구현 완료되었다. 응답에서 번호 목록을 추출(extract_candidates_from_reply)하고, 후속 "두 번째 삭제해줘" 같은 요청에서 순서 참조를 파싱(parse_ordinal_index)하여 해당 후보를 extraction payload에 자동 주입한다.
-- 현재 기본 운영안은 일반 chat 과 structured extraction 모두 host MLX server의 `LFM2-24B-A2B-MLX-4bit` 단일 모델로 처리하는 구성이다.
+- 현재 기본 운영안은 일반 chat 과 structured extraction 모두 host llama.cpp server의 `LiquidAI/LFM2-24B-A2B-GGUF:Q4_0` 단일 모델로 처리하는 구성이다.
 
-## MLX 단일 모델 권장안
+## llama.cpp 단일 모델 권장안
 
-- 호스트 macOS에서 `mlx-lm` 으로 `lmstudio-community/LFM2-24B-A2B-MLX-4bit` 서버를 `1235` 에 기동한다.
-- Open WebUI 는 `1236` filtered proxy 를 통해 같은 모델만 노출한다.
-- FastAPI는 `LOCAL_LLM_BASE_URL` 과 `LOCAL_LLM_STRUCTURED_EXTRACTION_BASE_URL` 모두 같은 `1235` endpoint 를 사용한다.
-- 이 방식은 32GB unified memory 환경에서 dual-model 상시 운영보다 memory pressure 와 swap 증가를 줄이기 쉽다.
+- 호스트 macOS에서 `llama-server` 로 `LiquidAI/LFM2-24B-A2B-GGUF:Q4_0` 서버를 `1242` 에 기동한다.
+- FastAPI는 `LOCAL_LLM_BASE_URL` 과 `LOCAL_LLM_STRUCTURED_EXTRACTION_BASE_URL` 모두 같은 `1242` endpoint 를 사용한다.
+- 이 방식은 standalone `mlx_lm.server` 대비 OpenClaw agentic workload에서 prefix cache 재사용 이점을 확보하기 쉽다.
 
-## 현재 MLX structured extraction 검증 범위
+## 현재 local structured extraction 검증 범위
 
 - `calendar_create`, `calendar_update`, `calendar_delete`
 - `gmail_draft`, `gmail_send`, `gmail_reply`, `gmail_thread_reply`
@@ -210,32 +210,28 @@
 - 대신 API fallback 응답은 `Google Calendar account` credential 재연결 안내를 직접 반환하도록 보강했고, 2026-03-21 재검증에서 approval API 응답이 해당 안내 문구를 실제로 반환함을 확인했다.
 - 다음 운영 단계는 n8n UI 에서 `Google Calendar account` credential 을 재연결한 뒤 calendar create/update/delete 승인 실행을 다시 end-to-end 재검증하는 것이다.
 
-## MLX launchd 운영 확인 절차
+## llama.cpp launchd 운영 확인 절차
 
 - 재부팅 후 자동 시작 설치와 수동 운영 스크립트는 `infra/scripts/install-launchd-services.sh`, `infra/scripts/start-assistant-stack.sh`, `infra/scripts/stop-assistant-stack.sh`, `infra/scripts/status-assistant-services.sh` 기준으로 추가했다.
 - stack 자동 시작 launchd label은 `com.aiassistant.stack` 이며, 자세한 절차는 `docs/service-operations.md` 에 정리한다.
 
 1. 서비스 등록 상태 확인
 
-- `launchctl list | grep com.aiassistant.mlx-base-server`
-- `launchctl list | grep com.aiassistant.mlx-webui-proxy`
+- `launchctl list | grep com.aiassistant.llama-lfm2-server`
 
 2. 모델 endpoint 확인
 
-- `curl -sS http://127.0.0.1:1235/v1/models`
-- `curl -sS http://127.0.0.1:1236/v1/models`
+- `curl -sS http://127.0.0.1:1242/v1/models`
 
 3. 로그 확인
 
-- base server 표준 로그: `/tmp/aiassistant-mlx-base-server.log`
-- base server 오류 로그: `/tmp/aiassistant-mlx-base-server.err.log`
-- WebUI proxy 표준 로그: `/tmp/aiassistant-mlx-webui-proxy.log`
-- WebUI proxy 오류 로그: `/tmp/aiassistant-mlx-webui-proxy.err.log`
+- llama server 표준 로그: `/tmp/aiassistant-llama-lfm2-server.log`
+- llama server 오류 로그: `/tmp/aiassistant-llama-lfm2-server.err.log`
 
 4. 강제 재시작 검증
 
-- base server 재시작 후 `curl -sS http://127.0.0.1:1235/v1/models` 와 `curl -sS http://127.0.0.1:1236/v1/models` 가 다시 성공하는지 확인한다.
-- 현재 기본 운영안에서는 `1234` 구조화 추출 전용 서버를 비활성 상태로 둔다.
+- llama server 재시작 후 `curl -sS http://127.0.0.1:1242/v1/models` 가 다시 성공하는지 확인한다.
+- 현재 기본 운영안에서는 단일 `1242` endpoint 를 일반 응답과 구조화 추출에 함께 사용한다.
 
 ## Slack 실환경 적용 순서
 
@@ -270,4 +266,4 @@
 
 - Slack 실제 연결 절차는 `docs/slack-integration.md` 를 기준으로 진행한다.
 - 외부 접근과 Kakao 공개 경로 적용 절차는 `docs/remote-access.md` 를 기준으로 진행한다.
-- MLX 구조화 추출 서버 운영 절차는 `docs/mlx-operations.md` 를 기준으로 진행한다.
+- llama.cpp 구조화 추출 서버 운영 절차는 `docs/llama-cpp-operations.md` 를 기준으로 진행한다.

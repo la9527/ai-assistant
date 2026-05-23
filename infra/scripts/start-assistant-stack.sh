@@ -17,8 +17,8 @@ mkdir -p \
   "$AI_STORAGE_ROOT/docker/postgres" \
   "$AI_STORAGE_ROOT/docker/redis" \
   "$AI_STORAGE_ROOT/docker/guacamole" \
-  "$AI_STORAGE_ROOT/mlx/huggingface" \
-  "$AI_STORAGE_ROOT/mlx/lmstudio"
+  "$AI_STORAGE_ROOT/llama-cpp/models" \
+  "$AI_STORAGE_ROOT/llama-cpp/huggingface"
 
 export AI_STORAGE_ROOT
 

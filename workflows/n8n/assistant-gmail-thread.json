@@ -1,0 +1,89 @@
+{
+  "name": "assistant-gmail-thread",
+  "active": true,
+  "id": "HkD3r2nqa1GmailThread01",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "assistant-gmail-thread",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "gmail-thread-webhook-node",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [260, 280],
+      "webhookId": "assistant-gmail-thread"
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $json.body ?? $json;\nconst detailLevel = String(payload.detail_level ?? payload.detailLevel ?? 'brief').toLowerCase();\nconst messageId = String(payload.message_id ?? payload.messageId ?? '').trim();\nconst threadId = String(payload.thread_id ?? payload.threadId ?? '').trim();\nconst sender = String(payload.sender ?? '').trim();\nconst subject = String(payload.subject ?? '').trim();\nconst mailboxScope = String(payload.mailboxScope ?? payload.mailbox_scope ?? 'default').toLowerCase();\nconst requestedLimit = Number(payload.limit ?? 20);\nconst limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.min(requestedLimit, 30) : 20;\nlet query = String(payload.search_query ?? payload.searchQuery ?? '').trim();\nif (!query && subject) {\n  query = `subject:\"${subject}\" newer_than:30d`;\n}\nif (!query && sender) {\n  query = `from:${sender} newer_than:30d`;\n}\nif (!query) {\n  query = 'newer_than:30d';\n}\nreturn [{ json: { detail_level: detailLevel === 'full' ? 'full' : 'brief', message_id: messageId, thread_id: threadId, sender, subject, search_query: query, mailboxScope, limit } }];"
+      },
+      "id": "gmail-thread-normalize-node",
+      "name": "Normalize Thread Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 280]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "message",
+        "operation": "getAll",
+        "returnAll": false,
+        "limit": "={{ $json.limit ?? 20 }}",
+        "simple": false,
+        "filters": {
+          "labelIds": "={{ (() => { const scope = ($json.mailboxScope ?? 'default'); if (scope === 'all_mail') return undefined; if (scope === 'sent') return ['SENT']; if (scope === 'drafts') return ['DRAFT']; if (scope === 'trash') return ['TRASH']; if (scope === 'spam') return ['SPAM']; return ['INBOX']; })() }}",
+          "q": "={{ $json.search_query }}"
+        }
+      },
+      "id": "gmail-thread-fetch-node",
+      "name": "Find Gmail Thread Messages",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [780, 280],
+      "alwaysOutputData": true,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "SC8Elz0TBVcb0MK2",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const request = $('Normalize Thread Request').first().json;\nconst candidates = $input.all().map((item) => item.json).filter((mail) => mail && (mail.id || mail.subject || mail.threadId));\n\nif (!candidates.length) {\n  return [{ json: { action: 'gmail-thread', found: false, reply: '요청한 조건에 맞는 메일 스레드를 찾지 못했습니다. 제목, 스레드 ID, 조회 범위를 더 구체적으로 알려주세요.' } }];\n}\n\nconst readHeader = (headers, key) => {\n  if (!Array.isArray(headers)) return '';\n  const matched = headers.find((header) => String(header.name || '').toLowerCase() === key.toLowerCase());\n  return matched?.value || '';\n};\n\nconst normalizeText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();\nconst sortTime = (mail) => {\n  const dateText = String(mail.date || readHeader(mail.headers, 'Date') || '');\n  const parsed = new Date(dateText);\n  return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();\n};\n\nconst pick = (() => {\n  if (request.message_id) {\n    const matched = candidates.find((mail) => String(mail.id || '') === String(request.message_id));\n    if (matched) return matched;\n  }\n  if (request.thread_id) {\n    const matched = candidates.find((mail) => String(mail.threadId || '') === String(request.thread_id));\n    if (matched) return matched;\n  }\n  return candidates[0];\n})();\n\nconst targetThreadId = String(request.thread_id || pick.threadId || '');\nconst threadMessages = (targetThreadId ? candidates.filter((mail) => String(mail.threadId || '') === targetThreadId) : [pick])\n  .sort((a, b) => sortTime(a) - sortTime(b));\n\nif (!threadMessages.length) {\n  return [{ json: { action: 'gmail-thread', found: false, reply: '요청한 조건에 맞는 메일 스레드를 찾지 못했습니다. 제목, 스레드 ID, 조회 범위를 더 구체적으로 알려주세요.' } }];\n}\n\nconst items = threadMessages.map((mail, index) => {\n  const headers = Array.isArray(mail.headers) ? mail.headers : [];\n  const subject = normalizeText(mail.subject || readHeader(headers, 'Subject') || '(제목 없음)');\n  const sender = normalizeText(typeof mail.from === 'string' ? mail.from : (mail.from?.text || readHeader(headers, 'From') || '발신자 미상'));\n  const to = normalizeText(typeof mail.to === 'string' ? mail.to : (mail.to?.text || readHeader(headers, 'To') || ''));\n  const date = normalizeText(mail.date || readHeader(headers, 'Date') || '');\n  const snippet = normalizeText(mail.snippet || '');\n  const body = normalizeText(mail.text || '');\n  return { index: index + 1, messageId: String(mail.id || ''), threadId: String(mail.threadId || ''), sender, to, subject, date, snippet, body, internalDate: date ? String(new Date(date).getTime()) : '', unread: Array.isArray(mail.labelIds) ? mail.labelIds.includes('UNREAD') : false };\n});\n\nconst headerSubject = items.find((item) => item.subject)?.subject || '';\nreturn [{ json: { action: 'gmail-thread', found: true, subject: headerSubject, threadId: targetThreadId, selectedMessageId: String(request.message_id || pick.id || ''), messageCount: items.length, items, reply: `메일 스레드 ${items.length}건을 찾았습니다.` } }];"
+      },
+      "id": "gmail-thread-build-node",
+      "name": "Build Thread Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1040, 280]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "gmail-thread-respond-node",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [1300, 280]
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Normalize Thread Request", "type": "main", "index": 0 }]] },
+    "Normalize Thread Request": { "main": [[{ "node": "Find Gmail Thread Messages", "type": "main", "index": 0 }]] },
+    "Find Gmail Thread Messages": { "main": [[{ "node": "Build Thread Response", "type": "main", "index": 0 }]] },
+    "Build Thread Response": { "main": [] }
+  },
+  "settings": {},
+  "pinData": {},
+  "versionId": "gmail-thread-live-001",
+  "tags": []
+}

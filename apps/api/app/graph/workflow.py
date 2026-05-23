@@ -3,22 +3,16 @@
 그래프 구조:
     classify → validate → (route_intent)
         ├─ validation_error → END
-        ├─ calendar_summary  → execute_calendar_summary  → END
-        ├─ calendar_write    → check_approval → (approved?)
-        │                        ├─ yes → execute_calendar_write → END
-        │                        └─ no  → END (approval_required)
-        ├─ gmail_compose     → check_approval → execute_gmail_compose → END
-        ├─ gmail_reply       → check_approval → execute_gmail_reply   → END
-        ├─ gmail_summary     → execute_gmail_summary    → END
-        ├─ gmail_detail      → execute_gmail_detail     → END
-        ├─ macos_note        → check_approval → execute_macos_note    → END
-        ├─ macos_reminder    → check_approval → execute_macos_reminder → END
-        ├─ macos_volume_get  → execute_macos_volume_get → END
-        ├─ macos_volume_set  → check_approval → execute_macos_volume_set → END
-        ├─ macos_darkmode    → check_approval → execute_macos_darkmode   → END
-        ├─ macos_finder      → execute_macos_finder     → END
-        ├─ mcp_*             → execute_mcp_tool         → END
-        └─ chat              → execute_chat             → END
+        ├─ skill (approval 불필요) → execute_skill → END
+        ├─ skill (approval 필요)  → check_approval_skill → (approved?)
+        │                              ├─ yes → execute_skill → END
+        │                              └─ no  → END (approval_required)
+        ├─ mcp_*            → execute_mcp_tool    → END
+        ├─ web_search       → execute_web_search  → END
+        └─ chat / fallback  → execute_chat        → END
+
+모든 도메인별 intent(gmail_*, calendar_*, macos_* 등)는
+skill registry 를 통해 execute_skill 노드에서 통합 실행된다.
 """
 
 from __future__ import annotations

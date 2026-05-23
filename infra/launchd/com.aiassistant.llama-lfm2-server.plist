@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.aiassistant.mlx-base-server</string>
+    <string>com.aiassistant.llama-lfm2-server</string>
 
     <key>ProgramArguments</key>
     <array>
         <string>/bin/zsh</string>
         <string>-lc</string>
-        <string>/Users/byoungyoungla/AI_Project/AI_Assistant/infra/scripts/start-mlx-base-server.sh</string>
+        <string>/Users/byoungyoungla/AI_Project/AI_Assistant/infra/scripts/start-llama-cpp-lfm2-server.sh</string>
     </array>
 
     <key>RunAtLoad</key>
@@ -27,20 +27,18 @@
         <string>/Users/byoungyoungla</string>
         <key>PATH</key>
         <string>/Users/byoungyoungla/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-        <key>MLX_BASE_MODEL_NAME</key>
-        <string>lmstudio-community/LFM2-24B-A2B-MLX-4bit</string>
-        <key>MLX_BASE_SERVER_HOST</key>
-        <string>0.0.0.0</string>
-        <key>MLX_BASE_SERVER_PORT</key>
-        <string>1235</string>
-        <key>MLX_BASE_SERVER_LOG_LEVEL</key>
-        <string>INFO</string>
+        <key>LLAMA_CPP_MODEL_REPO</key>
+        <string>LiquidAI/LFM2-24B-A2B-GGUF:Q4_0</string>
+        <key>LLAMA_CPP_PORT</key>
+        <string>1242</string>
+        <key>LLAMA_CPP_CTX_SIZE</key>
+        <string>131072</string>
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/tmp/aiassistant-mlx-base-server.log</string>
+    <string>/tmp/aiassistant-llama-lfm2-server.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/tmp/aiassistant-mlx-base-server.err.log</string>
+    <string>/tmp/aiassistant-llama-lfm2-server.err.log</string>
 </dict>
 </plist>

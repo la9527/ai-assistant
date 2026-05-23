@@ -4,6 +4,9 @@ import unittest
 from app.automation import _calendar_payload_to_request
 from app.automation import _build_gmail_search_query
 from app.automation import _build_gmail_reply_search_query
+from app.automation import _extract_mail_query_filters
+from app.automation import _compile_gmail_query
+from app.automation import _normalize_mail_query_filters
 from app.automation import build_gmail_detail_target_guidance
 from app.automation import _parse_summary_time_range
 from app.automation import apply_reference_context
@@ -22,8 +25,11 @@ from app.automation import parse_calendar_request
 from app.automation import parse_gmail_compose_request
 from app.automation import parse_gmail_detail_request
 from app.automation import parse_gmail_reply_request
+from app.automation import parse_gmail_thread_request
 from app.schemas import CalendarExtractionPayload
 from app.schemas import MailExtractionPayload
+from app.schemas import MailQueryDateRange
+from app.schemas import MailQueryFilters
 from app.schemas import StructuredExtraction
 
 
@@ -468,7 +474,8 @@ class GmailSearchQueryTests(unittest.TestCase):
         query = _build_gmail_search_query("오늘 메일 보여줘")
 
         self.assertIsNotNone(query)
-        self.assertIn("newer_than:1d", query)
+        self.assertIn("after:", query)
+        self.assertIn("before:", query)
 
     def test_recent_mail(self) -> None:
         query = _build_gmail_search_query("최근 메일 알려줘")
@@ -476,10 +483,209 @@ class GmailSearchQueryTests(unittest.TestCase):
         self.assertIsNotNone(query)
         self.assertIn("newer_than:3d", query)
 
+    def test_this_month_mail_uses_exact_month_range(self) -> None:
+        query = _build_gmail_search_query("메일을 이번달 기준으로 날짜별로 정리해서 알려줘")
+
+        self.assertIsNotNone(query)
+        self.assertIn("after:", query)
+        self.assertIn("before:", query)
+        self.assertNotIn("newer_than:30d", query)
+
+    def test_query_supports_subject_content_and_filters(self) -> None:
+        query = _build_gmail_search_query(
+            "받은편지함에서 읽지 않은 메일 중 제목 결제 알림 내용 카드 승인 첨부 있는 메일 찾아줘"
+        )
+
+        self.assertIsNotNone(query)
+        self.assertIn('subject:"결제 알림"', query)
+        self.assertIn('"카드 승인"', query)
+        self.assertIn("is:unread", query)
+        self.assertIn("has:attachment", query)
+        self.assertIn("in:inbox", query)
+
+    def test_query_supports_sender_and_recipient_labels(self) -> None:
+        query = _build_gmail_search_query(
+            "발신자 billing@example.com 수신자 me@example.com 메일 목록 보여줘"
+        )
+
+        self.assertIsNotNone(query)
+        self.assertIn("from:billing@example.com", query)
+        self.assertIn("to:me@example.com", query)
+
     def test_no_filter_returns_none(self) -> None:
         query = _build_gmail_search_query("메일 보여줘")
 
         self.assertIsNone(query)
+
+    def test_promotions_category(self) -> None:
+        query = _build_gmail_search_query("프로모션 메일 보여줘")
+
+        self.assertIsNotNone(query)
+        self.assertIn("category:promotions", query)
+
+    def test_sent_mailbox(self) -> None:
+        query = _build_gmail_search_query("보낸편지함 메일 보여줘")
+
+        self.assertIsNotNone(query)
+        self.assertIn("in:sent", query)
+
+    def test_yesterday_mail(self) -> None:
+        query = _build_gmail_search_query("어제 메일 보여줘")
+
+        self.assertIsNotNone(query)
+        self.assertIn("after:", query)
+        self.assertIn("before:", query)
+
+    def test_relative_weeks_mail(self) -> None:
+        query = _build_gmail_search_query("지난 2주 메일 보여줘")
+
+        self.assertIsNotNone(query)
+        self.assertIn("after:", query)
+
+    def test_unread_important_mail(self) -> None:
+        query = _build_gmail_search_query("읽지 않은 중요 메일 보여줘")
+
+        self.assertIsNotNone(query)
+        self.assertIn("is:unread", query)
+        self.assertIn("is:important", query)
+
+    def test_starred_mail(self) -> None:
+        query = _build_gmail_search_query("별표 메일 보여줘")
+
+        self.assertIsNotNone(query)
+        self.assertIn("is:starred", query)
+
+    def test_social_category(self) -> None:
+        query = _build_gmail_search_query("소셜 메일 보여줘")
+
+        self.assertIsNotNone(query)
+        self.assertIn("category:social", query)
+
+    def test_drafts_mailbox(self) -> None:
+        query = _build_gmail_search_query("초안 메일 보여줘")
+
+        self.assertIsNotNone(query)
+        self.assertIn("in:drafts", query)
+
+    # --- Step 5: 동의어 정규화 end-to-end ---
+
+    def test_ad_mail_synonym_promotions(self) -> None:
+        query = _build_gmail_search_query("광고 메일 보여줘")
+
+        self.assertIsNotNone(query)
+        self.assertIn("category:promotions", query)
+
+    def test_promotion_synonym_hongbo(self) -> None:
+        query = _build_gmail_search_query("홍보 메일 보여줘")
+
+        self.assertIsNotNone(query)
+        self.assertIn("category:promotions", query)
+
+    def test_newsletter_synonym_promotions(self) -> None:
+        query = _build_gmail_search_query("뉴스레터 메일 보여줘")
+
+        self.assertIsNotNone(query)
+        self.assertIn("category:promotions", query)
+
+    def test_all_mail_scope(self) -> None:
+        filters = _extract_mail_query_filters("전체 메일함 메일 보여줘")
+
+        self.assertEqual(filters.mailbox_scope, "all_mail")
+
+    def test_inbox_synonym(self) -> None:
+        query = _build_gmail_search_query("인박스 메일 보여줘")
+
+        self.assertIsNotNone(query)
+        self.assertIn("in:inbox", query)
+
+    def test_trash_mailbox(self) -> None:
+        query = _build_gmail_search_query("휴지통 메일 보여줘")
+
+        self.assertIsNotNone(query)
+        self.assertIn("in:trash", query)
+
+    def test_spam_mailbox(self) -> None:
+        query = _build_gmail_search_query("스팸 메일 보여줘")
+
+        self.assertIsNotNone(query)
+        self.assertIn("in:spam", query)
+
+    # --- Step 5: category + all_mail 조합 ---
+
+    def test_all_mail_promotions_combo(self) -> None:
+        filters = _extract_mail_query_filters("전체 메일함에서 프로모션 메일")
+        query = _compile_gmail_query(_normalize_mail_query_filters(filters))
+
+        self.assertEqual(filters.mailbox_scope, "all_mail")
+        self.assertIn("promotions", filters.categories)
+        self.assertIsNotNone(query)
+        self.assertIn("category:promotions", query)
+        self.assertNotIn("in:", query)  # all_mail 이므로 in: 없음
+
+    def test_all_mail_ad_combo(self) -> None:
+        filters = _extract_mail_query_filters("전체 메일함에서 광고 메일")
+        query = _compile_gmail_query(_normalize_mail_query_filters(filters))
+
+        self.assertEqual(filters.mailbox_scope, "all_mail")
+        self.assertIn("promotions", filters.categories)
+        self.assertIsNotNone(query)
+        self.assertIn("category:promotions", query)
+        self.assertNotIn("in:", query)
+
+    def test_all_mail_social_combo(self) -> None:
+        filters = _extract_mail_query_filters("전체 메일함에서 소셜 메일")
+        query = _compile_gmail_query(_normalize_mail_query_filters(filters))
+
+        self.assertEqual(filters.mailbox_scope, "all_mail")
+        self.assertIn("social", filters.categories)
+        self.assertIsNotNone(query)
+        self.assertIn("category:social", query)
+        self.assertNotIn("in:", query)
+
+    # --- Step 5: compiler 단위 테스트 ---
+
+    def test_compile_category_only(self) -> None:
+        filters = MailQueryFilters(categories=["promotions"])
+        query = _compile_gmail_query(filters)
+
+        self.assertEqual(query, "category:promotions")
+
+    def test_compile_sent_with_relative_days(self) -> None:
+        filters = MailQueryFilters(
+            mailbox_scope="sent",
+            date_range=MailQueryDateRange(relative_days=7),
+        )
+        query = _compile_gmail_query(filters)
+
+        self.assertIsNotNone(query)
+        self.assertIn("newer_than:7d", query)
+        self.assertIn("in:sent", query)
+
+    def test_compile_unread_important(self) -> None:
+        filters = MailQueryFilters(unread_only=True, important_only=True)
+        query = _compile_gmail_query(filters)
+
+        self.assertIsNotNone(query)
+        self.assertIn("is:unread", query)
+        self.assertIn("is:important", query)
+
+    def test_compile_sender_only(self) -> None:
+        filters = MailQueryFilters(sender="test@example.com")
+        query = _compile_gmail_query(filters)
+
+        self.assertEqual(query, "from:test@example.com")
+
+    def test_normalize_maps_synonym_category(self) -> None:
+        filters = MailQueryFilters(categories=["광고"])
+        normalized = _normalize_mail_query_filters(filters)
+
+        self.assertEqual(normalized.categories, ["promotions"])
+
+    def test_normalize_maps_synonym_mailbox(self) -> None:
+        filters = MailQueryFilters(mailbox_scope="전체 메일함")
+        normalized = _normalize_mail_query_filters(filters)
+
+        self.assertEqual(normalized.mailbox_scope, "all_mail")
 
 
 class GmailListAndDetailExtractionTests(unittest.TestCase):
@@ -503,6 +709,14 @@ class GmailListAndDetailExtractionTests(unittest.TestCase):
         intent = classify_message_intent("메일 목록 더 보여줘")
         self.assertEqual(intent, "gmail_list")
 
+    def test_classify_gmail_thread_intent(self) -> None:
+        intent = classify_message_intent("메일 같은 스레드 보여줘")
+        self.assertEqual(intent, "gmail_thread")
+
+    def test_classify_gmail_thread_followup_without_mail_keyword(self) -> None:
+        intent = classify_message_intent("같은 스레드 다시 보여줘")
+        self.assertEqual(intent, "gmail_thread")
+
     def test_gmail_list_extracts_limit_and_grouping(self) -> None:
         extraction = extract_structured_request("오늘 메일 12건 날짜별로 목록 보여줘")
 
@@ -517,6 +731,46 @@ class GmailListAndDetailExtractionTests(unittest.TestCase):
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed["subject"], "주간 보고")
         self.assertEqual(parsed["detail_level"], "full")
+
+    def test_parse_gmail_thread_request_with_subject(self) -> None:
+        parsed = parse_gmail_thread_request("제목 주간 보고 메일 스레드 전체 보여줘")
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["subject"], "주간 보고")
+        self.assertEqual(parsed["detail_level"], "full")
+
+    def test_apply_reference_context_infers_gmail_thread_from_followup(self) -> None:
+        previous = StructuredExtraction(
+            rawMessage="1번 메일 자세히 보여줘",
+            normalizedMessage="1번 메일 자세히 보여줘",
+            channel="webui",
+            domain="mail",
+            action="detail",
+            intent="gmail_detail",
+            confidence=0.9,
+            mail=MailExtractionPayload(
+                subject="보안 알림",
+                threadReference="thread-123",
+                messageReference="message-123",
+                searchQuery='subject:"보안 알림" newer_than:30d',
+            ),
+        )
+        extraction = StructuredExtraction(
+            rawMessage="같은 스레드 보여줘",
+            normalizedMessage="같은 스레드 보여줘",
+            channel="webui",
+            domain="chat",
+            action="chat",
+            intent="chat",
+            confidence=0.5,
+        )
+
+        result = apply_reference_context(extraction, previous, last_candidates=None)
+
+        self.assertEqual(result.intent, "gmail_thread")
+        self.assertEqual(result.domain, "mail")
+        self.assertIsNotNone(result.mail)
+        self.assertEqual(result.mail.thread_reference, "thread-123")
 
     def test_mail_payload_to_detail_request_requires_target(self) -> None:
         payload = MailExtractionPayload(detailLevel="brief")
@@ -550,7 +804,41 @@ class SummaryExtractionIntegrationTests(unittest.TestCase):
         self.assertEqual(extraction.intent, "gmail_summary")
         self.assertIsNotNone(extraction.mail)
         self.assertIsNotNone(extraction.mail.search_query)
-        self.assertIn("newer_than:1d", extraction.mail.search_query)
+        self.assertIn("after:", extraction.mail.search_query)
+        self.assertIn("before:", extraction.mail.search_query)
+
+
+class GmailBulkActionIntentTests(unittest.TestCase):
+    """Step 7: gmail_trash / gmail_archive / gmail_mark_read 분류 테스트."""
+
+    def test_classify_gmail_trash_delete(self) -> None:
+        intent = classify_message_intent("프로모션 메일 삭제해줘")
+        self.assertEqual(intent, "gmail_trash")
+
+    def test_classify_gmail_trash_cleanup(self) -> None:
+        intent = classify_message_intent("최근 30일 광고 메일 정리해줘")
+        self.assertEqual(intent, "gmail_trash")
+
+    def test_classify_gmail_trash_trashcan(self) -> None:
+        intent = classify_message_intent("오래된 메일 휴지통으로 옮겨줘")
+        self.assertEqual(intent, "gmail_trash")
+
+    def test_classify_gmail_archive(self) -> None:
+        intent = classify_message_intent("오래된 메일 보관해줘")
+        self.assertEqual(intent, "gmail_archive")
+
+    def test_classify_gmail_mark_read(self) -> None:
+        intent = classify_message_intent("안 읽은 메일 전부 읽음 처리해줘")
+        self.assertEqual(intent, "gmail_mark_read")
+
+    def test_trash_not_triggered_without_mail_keyword(self) -> None:
+        """메일 키워드 없이 삭제만 있으면 gmail_trash 아님."""
+        intent = classify_message_intent("파일 삭제해줘")
+        self.assertNotEqual(intent, "gmail_trash")
+
+    def test_archive_not_triggered_without_mail_keyword(self) -> None:
+        intent = classify_message_intent("문서 보관해줘")
+        self.assertNotEqual(intent, "gmail_archive")
 
 
 # ---------------------------------------------------------------------------
@@ -763,12 +1051,12 @@ class GmailSummaryFormatTests(unittest.TestCase):
         from app.llm import _format_gmail_items_markdown
 
         result = _format_gmail_items_markdown(self.SAMPLE_ITEMS)
-        # Markdown 굵게 표시
-        self.assertIn("**1) 회의 안건**", result)
-        self.assertIn("**2) 보고서 검토 요청**", result)
+        # 제목 라벨
+        self.assertIn("제목: 회의 안건", result)
+        self.assertIn("제목: 보고서 검토 요청", result)
         # 보낸 사람
-        self.assertIn("alice@example.com", result)
-        self.assertIn("bob@example.com", result)
+        self.assertIn("보낸 사람: alice@example.com", result)
+        self.assertIn("보낸 사람: bob@example.com", result)
         # 미리보기
         self.assertIn("내일 오전 10시", result)
 
@@ -787,7 +1075,8 @@ class GmailSummaryFormatTests(unittest.TestCase):
         body = {"reply": "원본", "items": self.SAMPLE_ITEMS}
         result = format_gmail_summary(body, "webui")
         # 외부 LLM 미설정 시 Markdown 템플릿 사용
-        self.assertIn("**1) 회의 안건**", result)
+        self.assertIn("제목: 회의 안건", result)
+        self.assertIn("보낸 사람: alice@example.com", result)
 
     def test_format_gmail_summary_kakao_uses_compact(self) -> None:
         from app.llm import format_gmail_summary
@@ -805,11 +1094,55 @@ class GmailSummaryFormatTests(unittest.TestCase):
         result = format_gmail_summary(body, "webui")
         self.assertIn("메일이 없습니다", result)
 
+    def test_format_gmail_summary_empty_items_keeps_query_hint(self) -> None:
+        from app.llm import format_gmail_summary
+
+        body = {"reply": "조회 조건에 맞는 메일이 없습니다.", "items": [], "query": "in:inbox is:unread"}
+        result = format_gmail_summary(body, "webui")
+        self.assertIn("조회 조건에 맞는 메일이 없습니다.", result)
+        self.assertIn("조건: in:inbox is:unread", result)
+
     def test_markdown_format_empty_returns_no_mail_message(self) -> None:
         from app.llm import _format_gmail_items_markdown
 
         result = _format_gmail_items_markdown([])
         self.assertIn("메일이 없습니다", result)
+
+    def test_markdown_format_groups_by_date_and_shows_query_hint(self) -> None:
+        from app.llm import _format_gmail_items_markdown
+
+        body = {
+            "query": 'after:2026/03/01 before:2026/04/01 in:inbox is:unread',
+            "groupByDate": True,
+            "hasMore": True,
+        }
+        items = [
+            {
+                "index": 1,
+                "sender": "alice@example.com",
+                "subject": "회의 안건",
+                "snippet": "내일 오전 10시",
+                "date": "Sun, 22 Mar 2026 09:00:00 +0900",
+                "unread": True,
+                "hasAttachments": True,
+            },
+            {
+                "index": 2,
+                "sender": "bob@example.com",
+                "subject": "보고서 검토 요청",
+                "snippet": "첨부 파일 확인",
+                "date": "Sat, 21 Mar 2026 08:30:00 +0900",
+            },
+        ]
+
+        result = _format_gmail_items_markdown(items, body)
+
+        self.assertIn("📬 **메일 목록**", result)
+        self.assertIn("조건: after:2026/03/01 before:2026/04/01 in:inbox is:unread", result)
+        self.assertIn("**오늘**", result)
+        self.assertIn("**어제**", result)
+        self.assertIn("(안읽음, 첨부)", result)
+        self.assertIn("다음 결과가 더 있습니다.", result)
 
     def test_parse_reply_fallback_slash_separated(self) -> None:
         """구버전 n8n reply (/ 구분) → items 파싱 후 Markdown 포맷."""
@@ -818,9 +1151,9 @@ class GmailSummaryFormatTests(unittest.TestCase):
         old_reply = "최근 메일 요약입니다. 1. alice@example.com - 회의 안건 / 2. bob@test.io - 보고서 확인"
         body = {"reply": old_reply}
         result = format_gmail_summary(body, "webui")
-        self.assertIn("**1) 회의 안건**", result)
-        self.assertIn("alice@example.com", result)
-        self.assertIn("**2) 보고서 확인**", result)
+        self.assertIn("제목: 회의 안건", result)
+        self.assertIn("보낸 사람: alice@example.com", result)
+        self.assertIn("제목: 보고서 확인", result)
 
     def test_parse_reply_fallback_newline_separated(self) -> None:
         """줄바꿈 구분 reply → items 파싱."""
@@ -838,6 +1171,66 @@ class GmailSummaryFormatTests(unittest.TestCase):
         body = {"reply": "메일 없음 알림"}
         result = format_gmail_summary(body, "webui")
         self.assertEqual(result, "메일 없음 알림")
+
+    # --- Step 6: direction-aware rendering ---
+
+    def test_sent_mode_markdown_shows_recipient(self) -> None:
+        from app.llm import _format_gmail_items_markdown
+
+        items = [
+            {"index": 1, "sender": "me@example.com", "toRecipients": "alice@company.com", "subject": "보고서 전달", "snippet": "회의록 첨부", "date": "Mon, 22 Mar 2026"},
+        ]
+        body = {"mailboxScope": "sent", "items": items}
+        result = _format_gmail_items_markdown(items, body)
+        self.assertIn("제목: 보고서 전달", result)
+        self.assertIn("받는 사람: alice@company.com", result)
+        self.assertNotIn("보낸 사람:", result)
+
+    def test_inbox_mode_markdown_shows_sender(self) -> None:
+        from app.llm import _format_gmail_items_markdown
+
+        items = [
+            {"index": 1, "sender": "alice@company.com", "toRecipients": "me@example.com", "subject": "보고서 수신", "snippet": "회의록 확인", "date": "Mon, 22 Mar 2026"},
+        ]
+        body = {"mailboxScope": "inbox", "items": items}
+        result = _format_gmail_items_markdown(items, body)
+        self.assertIn("제목: 보고서 수신", result)
+        self.assertIn("보낸 사람: alice@company.com", result)
+        self.assertNotIn("받는 사람:", result)
+
+    def test_default_scope_shows_sender(self) -> None:
+        from app.llm import _format_gmail_items_markdown
+
+        items = [
+            {"index": 1, "sender": "alice@company.com", "subject": "기본값 테스트", "snippet": "미리보기"},
+        ]
+        result = _format_gmail_items_markdown(items)
+        self.assertIn("제목: 기본값 테스트", result)
+        self.assertIn("보낸 사람: alice@company.com", result)
+
+    def test_sent_mode_compact_shows_recipient(self) -> None:
+        from app.llm import _format_gmail_items_compact
+
+        items = [
+            {"index": 1, "sender": "me@example.com", "toRecipients": "bob@company.com", "subject": "회신 테스트"},
+        ]
+        result = _format_gmail_items_compact(items, "", sent_mode=True)
+        self.assertIn("1. bob@company.com - 회신 테스트", result)
+        self.assertNotIn("me@example.com", result)
+
+    def test_format_gmail_summary_sent_scope_kakao(self) -> None:
+        from app.llm import format_gmail_summary
+
+        body = {
+            "reply": "원본",
+            "items": [
+                {"index": 1, "sender": "me@example.com", "toRecipients": "alice@company.com", "subject": "보고서"},
+            ],
+            "mailboxScope": "sent",
+        }
+        result = format_gmail_summary(body, "kakao")
+        self.assertIn("alice@company.com", result)
+        self.assertNotIn("me@example.com", result)
 
 
 class GmailDetailFormatTests(unittest.TestCase):
@@ -1062,10 +1455,12 @@ class GmailCandidateExtractionTests(unittest.TestCase):
     def test_markdown_bold_numbered_items(self) -> None:
         reply = (
             "📬 **최근 메일 요약**\n\n"
-            "**1) 프로젝트 승인**\n"
+            "**1)**\n"
+            "제목: 프로젝트 승인\n"
             "보낸 사람: boss@company.com\n"
             "날짜: 2026-03-20\n\n"
-            "**2) 주간 보고**\n"
+            "**2)**\n"
+            "제목: 주간 보고\n"
             "보낸 사람: team@company.com\n"
         )
         result = extract_candidates_from_reply(reply, "n8n")
@@ -1115,6 +1510,86 @@ class GmailFollowupReferenceTests(unittest.TestCase):
         candidate_data = result.metadata.get("candidate_data", {})
         self.assertEqual(candidate_data.get("sender"), "boss@co.com")
         self.assertEqual(candidate_data.get("snippet"), "확인 부탁")
+
+    def test_ordinal_followup_promotes_to_gmail_detail(self) -> None:
+        extraction = StructuredExtraction(
+            raw_message="1번 보여줘",
+            normalizedMessage="1번 보여줘",
+            domain="chat",
+            action="respond",
+            intent="chat",
+            confidence=0.5,
+        )
+        previous = self._make_extraction("최근 메일 요약해줘")
+        candidates = [
+            {"index": 0, "label": "프로젝트 승인", "raw": "boss@co.com - 프로젝트 승인", "sender": "boss@co.com", "message_id": "msg-001", "thread_id": "thread-001"},
+            {"index": 1, "label": "주간 보고", "raw": "team@co.com - 주간 보고", "sender": "team@co.com", "message_id": "msg-002", "thread_id": "thread-002"},
+        ]
+
+        result = apply_reference_context(extraction, previous, last_candidates=candidates)
+
+        self.assertEqual(result.intent, "gmail_detail")
+        self.assertEqual(result.domain, "mail")
+        self.assertTrue(result.metadata.get("candidate_selected"))
+        self.assertIsNotNone(result.mail)
+        self.assertEqual(result.mail.message_reference, "msg-001")
+
+    def test_mail_result_context_can_supply_candidates_for_ordinal_followup(self) -> None:
+        extraction = StructuredExtraction(
+            raw_message="2번 보여줘",
+            normalizedMessage="2번 보여줘",
+            domain="chat",
+            action="respond",
+            intent="chat",
+            confidence=0.5,
+        )
+        previous = self._make_extraction("최근 메일 목록 보여줘", intent="gmail_list")
+        mail_result_context = {
+            "mode": "list",
+            "items": [
+                {"messageId": "msg-001", "threadId": "thread-001", "sender": "boss@co.com", "subject": "프로젝트 승인", "snippet": "확인 부탁", "date": "2026-03-20"},
+                {"messageId": "msg-002", "threadId": "thread-002", "sender": "team@co.com", "subject": "주간 보고", "snippet": "보고 완료", "date": "2026-03-19"},
+            ],
+        }
+
+        result = apply_reference_context(
+            extraction,
+            previous,
+            last_candidates=None,
+            last_mail_result_context=mail_result_context,
+        )
+
+        self.assertEqual(result.intent, "gmail_detail")
+        self.assertTrue(result.metadata.get("candidate_selected"))
+        self.assertEqual(result.metadata.get("candidate_index"), 1)
+        self.assertIsNotNone(result.mail)
+        self.assertEqual(result.mail.message_reference, "msg-002")
+        self.assertEqual(result.mail.thread_reference, "thread-002")
+
+    def test_multi_index_followup_selects_multiple_mail_candidates(self) -> None:
+        extraction = StructuredExtraction(
+            raw_message="1번과 3번 보여줘",
+            normalizedMessage="1번과 3번 보여줘",
+            domain="chat",
+            action="respond",
+            intent="chat",
+            confidence=0.5,
+        )
+        previous = self._make_extraction("최근 메일 목록 보여줘", intent="gmail_list")
+        candidates = [
+            {"index": 0, "label": "프로젝트 승인", "raw": "boss@co.com - 프로젝트 승인", "sender": "boss@co.com", "message_id": "msg-001", "thread_id": "thread-001"},
+            {"index": 1, "label": "주간 보고", "raw": "team@co.com - 주간 보고", "sender": "team@co.com", "message_id": "msg-002", "thread_id": "thread-002"},
+            {"index": 2, "label": "보안 알림", "raw": "google@co.com - 보안 알림", "sender": "google@co.com", "message_id": "msg-003", "thread_id": "thread-003"},
+        ]
+
+        result = apply_reference_context(extraction, previous, last_candidates=candidates)
+
+        self.assertEqual(result.intent, "gmail_detail")
+        self.assertTrue(result.metadata.get("candidate_selected_multi"))
+        self.assertEqual(result.metadata.get("candidate_indexes"), [0, 2])
+        self.assertEqual(len(result.metadata.get("candidate_data_list", [])), 2)
+        self.assertIsNotNone(result.mail)
+        self.assertEqual(result.mail.selected_indexes, [0, 2])
 
     def test_candidate_selected_gmail_redirects_to_chat(self) -> None:
         """classify 노드에서 candidate_selected+gmail_summary → chat 전환."""

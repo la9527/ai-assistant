@@ -47,6 +47,21 @@ GMAIL_DETAIL_SKILL = SkillDescriptor(
     risk_level="low",
 )
 
+GMAIL_THREAD_SKILL = SkillDescriptor(
+    skill_id="gmail_thread",
+    name="메일 스레드 조회",
+    description="선택한 메일이 속한 스레드 전체 흐름을 조회한다.",
+    domain="mail",
+    action="thread",
+    trigger_keywords=["메일", "이메일", "gmail", "스레드", "thread", "대화 전체", "같은 스레드"],
+    intent_examples=["같은 스레드 보여줘", "이 메일 대화 전체 보여줘"],
+    disambiguation_hints=["단일 메일이 아니라 thread 전체 조회", "후속 참조가 있으면 thread 우선"],
+    executor_type="n8n",
+    executor_ref="N8N_GMAIL_THREAD_WEBHOOK_PATH",
+    approval_required=False,
+    risk_level="low",
+)
+
 GMAIL_DRAFT_SKILL = SkillDescriptor(
     skill_id="gmail_draft",
     name="메일 초안 작성",
@@ -107,12 +122,61 @@ GMAIL_THREAD_REPLY_SKILL = SkillDescriptor(
     risk_level="high",
 )
 
+GMAIL_TRASH_SKILL = SkillDescriptor(
+    skill_id="gmail_trash",
+    name="메일 삭제",
+    description="조건에 맞는 메일을 휴지통으로 이동한다. preview-first 방식으로 대상을 확인한 뒤 승인 후 실행한다.",
+    domain="mail",
+    action="trash",
+    trigger_keywords=["메일", "이메일", "gmail", "삭제", "지워", "지우", "정리", "휴지통"],
+    intent_examples=["프로모션 메일 삭제해줘", "최근 30일 광고 메일 정리해줘"],
+    disambiguation_hints=["메일 삭제/정리 요청", "검색 조건 필수", "승인 필요"],
+    executor_type="n8n",
+    executor_ref="N8N_GMAIL_SUMMARY_WEBHOOK_PATH",
+    approval_required=True,
+    risk_level="high",
+)
+
+GMAIL_ARCHIVE_SKILL = SkillDescriptor(
+    skill_id="gmail_archive",
+    name="메일 보관",
+    description="조건에 맞는 메일을 보관 처리한다.",
+    domain="mail",
+    action="archive",
+    trigger_keywords=["메일", "이메일", "gmail", "보관", "archive"],
+    intent_examples=["오래된 메일 보관해줘", "읽은 메일 보관 처리해줘"],
+    disambiguation_hints=["메일 보관 요청", "승인 필요"],
+    executor_type="n8n",
+    executor_ref="N8N_GMAIL_SUMMARY_WEBHOOK_PATH",
+    approval_required=True,
+    risk_level="medium",
+)
+
+GMAIL_MARK_READ_SKILL = SkillDescriptor(
+    skill_id="gmail_mark_read",
+    name="메일 읽음 처리",
+    description="조건에 맞는 메일을 읽음 처리한다.",
+    domain="mail",
+    action="mark_read",
+    trigger_keywords=["메일", "이메일", "gmail", "읽음 처리", "읽음처리"],
+    intent_examples=["안 읽은 메일 전부 읽음 처리해줘"],
+    disambiguation_hints=["메일 읽음 처리 요청", "승인 필요"],
+    executor_type="n8n",
+    executor_ref="N8N_GMAIL_SUMMARY_WEBHOOK_PATH",
+    approval_required=True,
+    risk_level="low",
+)
+
 SKILLS = [
     GMAIL_SUMMARY_SKILL,
     GMAIL_LIST_SKILL,
     GMAIL_DETAIL_SKILL,
+    GMAIL_THREAD_SKILL,
     GMAIL_DRAFT_SKILL,
     GMAIL_SEND_SKILL,
     GMAIL_REPLY_SKILL,
     GMAIL_THREAD_REPLY_SKILL,
+    GMAIL_TRASH_SKILL,
+    GMAIL_ARCHIVE_SKILL,
+    GMAIL_MARK_READ_SKILL,
 ]

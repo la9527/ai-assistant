@@ -19,7 +19,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const payload = $json.body ?? $json;\nconst detailLevel = String(payload.detail_level ?? payload.detailLevel ?? 'brief').toLowerCase();\nconst messageId = String(payload.message_id ?? payload.messageId ?? '').trim();\nconst threadId = String(payload.thread_id ?? payload.threadId ?? '').trim();\nconst sender = String(payload.sender ?? '').trim();\nconst subject = String(payload.subject ?? '').trim();\nconst searchQuery = String(payload.search_query ?? payload.searchQuery ?? '').trim();\n\nlet query = searchQuery;\nif (!query && subject) {\n  query = `subject:\"${subject}\" newer_than:30d`;\n}\nif (!query && sender) {\n  query = `from:${sender} newer_than:30d`;\n}\nif (!query) {\n  query = 'newer_than:30d';\n}\n\nreturn [{\n  json: {\n    detail_level: detailLevel === 'full' ? 'full' : 'brief',\n    message_id: messageId,\n    thread_id: threadId,\n    sender,\n    subject,\n    search_query: query,\n  },\n}];"
+        "jsCode": "const payload = $json.body ?? $json;\nconst detailLevel = String(payload.detail_level ?? payload.detailLevel ?? 'brief').toLowerCase();\nconst messageId = String(payload.message_id ?? payload.messageId ?? '').trim();\nconst threadId = String(payload.thread_id ?? payload.threadId ?? '').trim();\nconst sender = String(payload.sender ?? '').trim();\nconst subject = String(payload.subject ?? '').trim();\nconst searchQuery = String(payload.search_query ?? payload.searchQuery ?? '').trim();\nconst mailboxScope = String(payload.mailboxScope ?? payload.mailbox_scope ?? 'default').toLowerCase();\n\nlet query = searchQuery;\nif (!query && subject) {\n  query = `subject:\"${subject}\" newer_than:30d`;\n}\nif (!query && sender) {\n  query = `from:${sender} newer_than:30d`;\n}\nif (!query) {\n  query = 'newer_than:30d';\n}\n\nreturn [{\n  json: {\n    detail_level: detailLevel === 'full' ? 'full' : 'brief',\n    message_id: messageId,\n    thread_id: threadId,\n    sender,\n    subject,\n    search_query: query,\n    mailboxScope,\n  },\n}];"
       },
       "id": "gmail-detail-normalize-node",
       "name": "Normalize Detail Request",
@@ -36,9 +36,7 @@
         "limit": 10,
         "simple": false,
         "filters": {
-          "labelIds": [
-            "INBOX"
-          ],
+          "labelIds": "={{ (() => { const scope = ($json.mailboxScope ?? 'default'); if (scope === 'all_mail') return undefined; if (scope === 'sent') return ['SENT']; if (scope === 'drafts') return ['DRAFT']; if (scope === 'trash') return ['TRASH']; if (scope === 'spam') return ['SPAM']; return ['INBOX']; })() }}",
           "q": "={{ $json.search_query }}"
         }
       },

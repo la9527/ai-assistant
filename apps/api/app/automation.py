@@ -18,6 +18,8 @@ from app.schemas import BrowserExtractionPayload
 from app.schemas import ExtractionReference
 from app.schemas import MacOSExtractionPayload
 from app.schemas import MailExtractionPayload
+from app.schemas import MailQueryDateRange
+from app.schemas import MailQueryFilters
 from app.schemas import NoteExtractionPayload
 from app.schemas import StructuredExtraction
 from app.skills.registry import classify_intent_from_registry
@@ -57,7 +59,11 @@ GMAIL_SEND_KEYWORDS = ("발송", "send")
 GMAIL_SUMMARY_KEYWORDS = ("요약", "최근", "편지함", "받은편지함", "inbox")
 GMAIL_LIST_KEYWORDS = ("목록", "리스트", "더보기", "더 보여", "여러 건")
 GMAIL_DETAIL_KEYWORDS = ("상세", "자세히", "본문", "원문", "내용")
+GMAIL_THREAD_VIEW_KEYWORDS = ("스레드", "thread", "대화 전체", "대화 흐름", "같은 스레드")
 GMAIL_REPLY_KEYWORDS = ("답장", "회신", "reply")
+GMAIL_TRASH_KEYWORDS = ("삭제", "지워", "지우", "정리", "휴지통")
+GMAIL_ARCHIVE_KEYWORDS = ("보관", "archive")
+GMAIL_MARK_READ_KEYWORDS = ("읽음 처리", "읽음처리")
 GMAIL_REPLY_REQUEST_HINTS = (
     "답장해",
     "답장 해",
@@ -106,6 +112,9 @@ REFERENCE_MESSAGE_HINTS = (
     "그 메일",
     "그 답장",
     "그 초안",
+    "같은 스레드",
+    "같은 대화",
+    "이 메일",
     "그대로",
     "그거",
     "그걸",
@@ -203,6 +212,7 @@ ACTION_LABELS = {
     "gmail_draft": "초안 작성",
     "gmail_send": "발송",
     "gmail_reply": "회신",
+    "gmail_thread": "스레드 조회",
     "gmail_thread_reply": "thread 이어쓰기",
     "macos_note_create": "macOS 메모 생성",
     "macos_reminder_create": "macOS 미리알림 추가",
@@ -243,6 +253,76 @@ GMAIL_COMPOSE_STOP_LABELS = (
     "초안 작성해 줘",
     "초안 만들어줘",
     "초안 만들어 줘",
+)
+
+GMAIL_SEARCH_STOP_LABELS = (
+    "제목",
+    "subject",
+    "타이틀",
+    "내용",
+    "본문",
+    "컨텐츠",
+    "콘텐츠",
+    "body",
+    "발신자",
+    "보낸 사람",
+    "sender",
+    "from",
+    "수신자",
+    "받는 사람",
+    "받는사람",
+    "recipient",
+    "to",
+    "검색어",
+    "키워드",
+    "query",
+    "메일",
+    "이메일",
+    "gmail",
+    "목록",
+    "리스트",
+    "요약",
+    "정리",
+    "보여줘",
+    "보여 줘",
+    "알려줘",
+    "알려 줘",
+    "찾아줘",
+    "찾아 줘",
+    "검색해줘",
+    "검색해 줘",
+    "상세",
+    "자세히",
+    "원문",
+    "더보기",
+    "더 보여",
+    "날짜별",
+    "일자별",
+    "그룹",
+    "읽지",
+    "읽은",
+    "안 읽",
+    "중요",
+    "별표",
+    "첨부",
+    "보낸편지함",
+    "보낸 메일",
+    "받은편지함",
+    "인박스",
+    "초안",
+    "휴지통",
+    "스팸",
+    "전체 메일함",
+    "전체 메일",
+    "메일 전체",
+    "프로모션",
+    "소셜",
+    "업데이트",
+    "포럼",
+    "광고",
+    "홍보",
+    "뉴스레터",
+    "마케팅",
 )
 
 MACOS_NOTE_ACTION_STOP_LABELS = (
@@ -340,35 +420,281 @@ def _parse_summary_time_range(message: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _build_gmail_search_query(message: str) -> str | None:
-    """Gmail 요약 쿼리에서 검색 조건을 추출한다."""
-    msg = re.sub(r"\s+", " ", message).strip().lower()
+
+
+# ---------------------------------------------------------------------------
+# Gmail 검색 쿼리 3단계 파이프라인: extract → normalize → compile
+# ---------------------------------------------------------------------------
+
+
+def _extract_mail_query_filters(message: str) -> MailQueryFilters:
+    """자연어 메시지에서 구조화된 메일 검색 필터를 추출한다."""
+    normalized = re.sub(r"\s+", " ", message).strip()
+    msg = normalized.lower()
+
+    # --- 날짜 범위 ---
+    date_range: MailQueryDateRange | None = None
+
+    start_at, end_at = _parse_summary_time_range(normalized)
+    if start_at and end_at:
+        fmt = "%Y/%m/%d"
+        date_range = MailQueryDateRange(
+            start_at=datetime.fromisoformat(start_at).strftime(fmt),
+            end_at=datetime.fromisoformat(end_at).strftime(fmt),
+        )
+    else:
+        tz = ZoneInfo(settings.calendar_timezone if hasattr(settings, "calendar_timezone") else "Asia/Seoul")
+        now = datetime.now(tz)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        fmt = "%Y/%m/%d"
+
+        if "어제" in msg:
+            yesterday_start = today_start - timedelta(days=1)
+            date_range = MailQueryDateRange(
+                start_at=yesterday_start.strftime(fmt),
+                end_at=today_start.strftime(fmt),
+            )
+        else:
+            relative_match = re.search(r"(최근|지난)\s*(\d{1,2})\s*(일|주|개월|달)", msg)
+            if relative_match:
+                amount = int(relative_match.group(2))
+                unit = relative_match.group(3)
+                if unit == "일":
+                    start = today_start - timedelta(days=amount)
+                elif unit == "주":
+                    start = today_start - timedelta(days=amount * 7)
+                else:
+                    start = today_start - timedelta(days=amount * 30)
+                date_range = MailQueryDateRange(start_at=start.strftime(fmt))
+            else:
+                absolute_month = re.search(r"(?:(20\d{2})\s*년\s*)?(\d{1,2})\s*월", normalized)
+                if absolute_month and "이번 달" not in normalized and "이번달" not in normalized and "다음 달" not in normalized and "다음달" not in normalized:
+                    year = int(absolute_month.group(1) or now.year)
+                    month = int(absolute_month.group(2))
+                    if 1 <= month <= 12:
+                        month_start = today_start.replace(year=year, month=month, day=1)
+                        if month == 12:
+                            month_end = month_start.replace(year=year + 1, month=1)
+                        else:
+                            month_end = month_start.replace(month=month + 1)
+                        date_range = MailQueryDateRange(
+                            start_at=month_start.strftime(fmt),
+                            end_at=month_end.strftime(fmt),
+                        )
+                elif "최근" in msg:
+                    date_range = MailQueryDateRange(relative_days=3)
+
+    # --- 상태 필터 ---
+    unread_only: bool | None = None
+    read_only: bool | None = None
+    if "읽지 않" in msg or "안 읽" in msg or "unread" in msg:
+        unread_only = True
+    elif "읽은" in msg or "read" in msg:
+        read_only = True
+
+    has_attachment: bool | None = True if ("첨부" in msg or "attachment" in msg) else None
+    important_only: bool | None = True if ("중요" in msg or "important" in msg) else None
+    starred_only: bool | None = True if ("별표" in msg or "starred" in msg) else None
+
+    # --- 메일함 ---
+    mailbox_scope: str | None = None
+    if "전체 메일함" in msg or "전체 메일" in msg or "메일 전체" in msg or "all mail" in msg:
+        mailbox_scope = "all_mail"
+    elif "보낸편지함" in msg or "보낸 메일" in msg or "sent mail" in msg:
+        mailbox_scope = "sent"
+    elif "초안" in msg or "draft" in msg:
+        mailbox_scope = "drafts"
+    elif "휴지통" in msg or "trash" in msg:
+        mailbox_scope = "trash"
+    elif "스팸" in msg or "spam" in msg:
+        mailbox_scope = "spam"
+    elif "받은편지함" in msg or "인박스" in msg or "inbox" in msg:
+        mailbox_scope = "inbox"
+
+    # --- 카테고리 ---
+    categories: list[str] = []
+    if "프로모션" in msg or "promotions" in msg or "광고" in msg or "홍보" in msg or "뉴스레터" in msg or "마케팅" in msg:
+        categories.append("promotions")
+    if "소셜" in msg or "social" in msg:
+        categories.append("social")
+    if "업데이트" in msg or "updates" in msg:
+        categories.append("updates")
+    if "포럼" in msg or "forums" in msg:
+        categories.append("forums")
+
+    # --- 필드 추출 ---
+    sender = _extract_labeled_segment(
+        normalized,
+        labels=("발신자", "보낸 사람", "sender", "from"),
+        stop_labels=GMAIL_SEARCH_STOP_LABELS,
+    )
+    recipient = _extract_labeled_segment(
+        normalized,
+        labels=("수신자", "받는 사람", "받는사람", "recipient", "to"),
+        stop_labels=GMAIL_SEARCH_STOP_LABELS,
+    )
+    subject = _extract_labeled_segment(
+        normalized,
+        labels=("제목", "주제", "subject", "타이틀"),
+        stop_labels=GMAIL_SEARCH_STOP_LABELS,
+    )
+    content = _extract_labeled_segment(
+        normalized,
+        labels=("내용", "본문", "컨텐츠", "콘텐츠", "body"),
+        stop_labels=GMAIL_SEARCH_STOP_LABELS,
+    )
+    keyword = _extract_labeled_segment(
+        normalized,
+        labels=("검색어", "키워드", "query"),
+        stop_labels=GMAIL_SEARCH_STOP_LABELS,
+    )
+
+    sender_match = re.search(r"(\S+)(?:에게서|한테서|로부터|가 보낸|이 보낸)", msg)
+    if sender is None and sender_match:
+        sender = sender_match.group(1)
+
+    related_keyword_match = re.search(r"(.+?)\s+관련\s+(?:메일|이메일|gmail)", normalized, re.IGNORECASE)
+    if keyword is None and related_keyword_match:
+        candidate = re.sub(r"^(오늘|어제|최근|이번\s*주|지난\s*주|이번\s*달|지난\s*달)\s+", "", related_keyword_match.group(1)).strip()
+        keyword = candidate or None
+
+    body_keywords: list[str] = []
+    if content:
+        body_keywords.append(content.replace('"', "").strip())
+
+    free_keywords: list[str] = []
+    if keyword:
+        free_keywords.append(keyword.replace('"', "").strip())
+    quoted_terms = [t.replace('"', "").strip() for t in re.findall(r'["“”\'\'‘’]([^"“”\'\'‘’]{2,80})["“”\'\'‘’]', normalized)]
+    for term in quoted_terms:
+        if term and term not in free_keywords:
+            free_keywords.append(term)
+
+    return MailQueryFilters(
+        mailbox_scope=mailbox_scope,
+        categories=categories,
+        sender=sender,
+        recipient=recipient,
+        subject=subject,
+        body_keywords=body_keywords,
+        free_keywords=free_keywords,
+        unread_only=unread_only,
+        read_only=read_only,
+        has_attachment=has_attachment,
+        important_only=important_only,
+        starred_only=starred_only,
+        date_range=date_range,
+    )
+
+
+_CATEGORY_SYNONYMS: dict[str, str] = {
+    "광고": "promotions", "홍보": "promotions", "뉴스레터": "promotions",
+    "마케팅": "promotions", "이벤트": "promotions",
+    "프로모션": "promotions", "promotions": "promotions",
+    "소셜": "social", "social": "social",
+    "업데이트": "updates", "updates": "updates",
+    "포럼": "forums", "forums": "forums",
+}
+
+_MAILBOX_SYNONYMS: dict[str, str] = {
+    "전체 메일함": "all_mail", "전체 메일": "all_mail", "메일 전체": "all_mail",
+    "all_mail": "all_mail", "all mail": "all_mail",
+    "받은편지함": "inbox", "인박스": "inbox", "수신 메일": "inbox", "inbox": "inbox",
+    "보낸편지함": "sent", "보낸 메일": "sent", "sent": "sent", "sent mail": "sent",
+    "초안": "drafts", "drafts": "drafts", "draft": "drafts",
+    "휴지통": "trash", "trash": "trash",
+    "스팸": "spam", "spam": "spam",
+}
+
+
+def _normalize_mail_query_filters(filters: MailQueryFilters) -> MailQueryFilters:
+    """동의어를 canonical 값으로 정규화하고 충돌 필드를 정리한다."""
+    normalized_categories = []
+    for cat in filters.categories:
+        canonical = _CATEGORY_SYNONYMS.get(cat, cat)
+        if canonical not in normalized_categories:
+            normalized_categories.append(canonical)
+
+    normalized_scope = filters.mailbox_scope
+    if normalized_scope:
+        normalized_scope = _MAILBOX_SYNONYMS.get(normalized_scope, normalized_scope)
+
+    return filters.model_copy(update={
+        "categories": normalized_categories,
+        "mailbox_scope": normalized_scope,
+    })
+
+
+def _compile_gmail_query(filters: MailQueryFilters) -> str | None:
+    """정규화된 MailQueryFilters 를 Gmail native query string 으로 변환한다."""
     parts: list[str] = []
 
-    # 시간 참조
-    if "오늘" in msg:
-        parts.append("newer_than:1d")
-    elif "이번 주" in msg or "이번주" in msg:
-        parts.append("newer_than:7d")
-    elif "지난 주" in msg or "저번 주" in msg or "지난주" in msg or "저번주" in msg:
-        parts.append("newer_than:14d older_than:7d")
-    elif "이번 달" in msg or "이번달" in msg:
-        parts.append("newer_than:30d")
-    elif "최근" in msg:
-        parts.append("newer_than:3d")
+    def _append(part: str | None) -> None:
+        if part and part not in parts:
+            parts.append(part)
 
-    # 발신자 참조
-    sender_match = re.search(r"(\S+)(?:에게서|한테서|로부터|가 보낸|이 보낸)", msg)
-    if sender_match:
-        parts.append(f"from:{sender_match.group(1)}")
+    def _build_field_query(field: str, value: str) -> str | None:
+        cleaned = value.replace('"', "").strip()
+        if not cleaned:
+            return None
+        email_match = EMAIL_ADDRESS_PATTERN.search(cleaned)
+        if field in {"from", "to"} and email_match:
+            return f"{field}:{email_match.group(0)}"
+        return f'{field}:"{cleaned}"'
 
-    # 키워드 참조
-    subject_match = re.search(r"(?:제목|주제|subject)[\s:：]*(\S+)", msg)
-    if subject_match:
-        parts.append(f'subject:"{subject_match.group(1)}"')
+    # --- 날짜 ---
+    dr = filters.date_range
+    if dr:
+        if dr.start_at:
+            _append(f"after:{dr.start_at}")
+        if dr.end_at:
+            _append(f"before:{dr.end_at}")
+        if not dr.start_at and not dr.end_at and dr.relative_days:
+            _append(f"newer_than:{dr.relative_days}d")
+
+    # --- 상태 ---
+    if filters.unread_only:
+        _append("is:unread")
+    elif filters.read_only:
+        _append("is:read")
+    if filters.has_attachment:
+        _append("has:attachment")
+    if filters.important_only:
+        _append("is:important")
+    if filters.starred_only:
+        _append("is:starred")
+
+    # --- 메일함 ---
+    _MAILBOX_QUERY = {"inbox": "in:inbox", "sent": "in:sent", "drafts": "in:drafts", "trash": "in:trash", "spam": "in:spam"}
+    scope_query = _MAILBOX_QUERY.get(filters.mailbox_scope or "")
+    if scope_query:
+        _append(scope_query)
+
+    # --- 카테고리 ---
+    for cat in filters.categories:
+        _append(f"category:{cat}")
+
+    # --- 필드 ---
+    _append(_build_field_query("from", filters.sender) if filters.sender else None)
+    _append(_build_field_query("to", filters.recipient) if filters.recipient else None)
+    _append(_build_field_query("subject", filters.subject) if filters.subject else None)
+    for bk in filters.body_keywords:
+        cleaned = bk.replace('"', "").strip()
+        if cleaned:
+            _append(f'"{cleaned}"')
+    for fk in filters.free_keywords:
+        cleaned = fk.replace('"', "").strip()
+        if cleaned:
+            _append(f'"{cleaned}"')
 
     return " ".join(parts) if parts else None
 
+
+def _build_gmail_search_query(message: str) -> str | None:
+    """Gmail 요약 쿼리에서 검색 조건을 추출한다 (하위 호환 wrapper)."""
+    filters = _extract_mail_query_filters(message)
+    normalized = _normalize_mail_query_filters(filters)
+    return _compile_gmail_query(normalized)
 
 def _extract_gmail_list_limit(message: str) -> int | None:
     matched = LIST_LIMIT_PATTERN.search(message)
@@ -431,6 +757,25 @@ def _build_mail_result_context(raw_body: dict, items: list[dict], *, mode: str, 
         "selectedMessageId": (selected_item or {}).get("messageId") or (selected_item or {}).get("message_id"),
         "selectedThreadId": (selected_item or {}).get("threadId") or (selected_item or {}).get("thread_id"),
     }
+
+
+def _merge_mail_request_context(raw_body: dict, extra_payload: dict[str, str] | None) -> dict:
+    if not extra_payload:
+        return raw_body
+
+    merged = dict(raw_body)
+    if extra_payload.get("searchQuery") and not merged.get("query") and not merged.get("searchQuery"):
+        merged["query"] = extra_payload["searchQuery"]
+    if extra_payload.get("cursor") and not merged.get("nextCursor"):
+        merged["requestedCursor"] = extra_payload["cursor"]
+    if extra_payload.get("limit") and not merged.get("limit"):
+        try:
+            merged["limit"] = int(extra_payload["limit"])
+        except ValueError:
+            merged["limit"] = extra_payload["limit"]
+    if extra_payload.get("groupByDate") and "groupByDate" not in merged:
+        merged["groupByDate"] = extra_payload["groupByDate"].lower() == "true"
+    return merged
 GMAIL_REPLY_BODY_SUFFIX_PATTERNS = (
     re.compile(r"\s*메일에\s*(?:이어서\s*)?답장해\s*줘\s*$"),
     re.compile(r"\s*메일에\s*회신해\s*줘\s*$"),
@@ -562,6 +907,19 @@ def _extract_rule_based_request(message: str, channel: str | None = None) -> Str
             searchQuery=search_query,
             detailLevel=detail_level,
             selectedIndexes=selected_indexes,
+        )
+    elif intent == "gmail_thread":
+        search_query = _build_gmail_search_query(message)
+        message_id_match = MESSAGE_ID_PATTERN.search(message)
+        thread_id_match = THREAD_ID_PATTERN.search(message)
+        limit = _extract_gmail_list_limit(message)
+        mail_payload = MailExtractionPayload(
+            messageReference=message_id_match.group(1) if message_id_match else None,
+            threadReference=thread_id_match.group(1) if thread_id_match else None,
+            searchQuery=search_query,
+            limit=limit,
+            detailLevel="full" if any(keyword in message for keyword in ("본문", "원문", "전체")) else "brief",
+            selectedIndexes=_extract_selected_indexes(message),
         )
     elif intent == "browser_read":
         url = _extract_browser_url(message)
@@ -814,10 +1172,41 @@ def apply_reference_context(
     extraction: StructuredExtraction,
     previous_extraction: StructuredExtraction | None,
     last_candidates: list[dict[str, str]] | None = None,
+    last_mail_result_context: dict | None = None,
 ) -> StructuredExtraction:
+    if (not last_candidates) and last_mail_result_context:
+        last_candidates = _extract_candidates_from_mail_result_context(last_mail_result_context)
+
     # 1. 순서 참조 ("두 번째", "1번") + 후보 목록이 있으면 후보 선택 적용
     ordinal_idx = parse_ordinal_index(extraction.raw_message)
-    if ordinal_idx is not None and last_candidates and 0 <= ordinal_idx < len(last_candidates):
+    selected_indexes = _extract_selected_indexes(extraction.raw_message)
+    if ordinal_idx is not None and previous_extraction is not None and previous_extraction.domain == "mail":
+        extraction = _promote_mail_followup_intent(
+            extraction,
+            previous_extraction,
+            last_mail_result_context,
+        )
+    elif len(selected_indexes) >= 2 and previous_extraction is not None and previous_extraction.domain == "mail":
+        extraction = _promote_mail_followup_intent(
+            extraction,
+            previous_extraction,
+            last_mail_result_context,
+        )
+
+    if len(selected_indexes) >= 2 and last_candidates:
+        chosen_candidates = [
+            last_candidates[idx]
+            for idx in selected_indexes
+            if 0 <= idx < len(last_candidates)
+        ]
+        if chosen_candidates:
+            extraction = _apply_multi_candidate_selection(
+                extraction,
+                selected_indexes,
+                previous_extraction,
+                chosen_candidates,
+            )
+    if len(selected_indexes) < 2 and ordinal_idx is not None and last_candidates and 0 <= ordinal_idx < len(last_candidates):
         candidate = last_candidates[ordinal_idx]
         candidate_label = candidate.get("label", candidate.get("raw", ""))
         extraction = _apply_candidate_selection(extraction, candidate_label, ordinal_idx, previous_extraction, candidate_data=candidate)
@@ -841,6 +1230,17 @@ def apply_reference_context(
                 "gmail_detail_candidate_total": len(last_candidates),
             }
 
+    if previous_extraction is not None and previous_extraction.domain == "mail":
+        if extraction.domain in {"chat", "unknown"} and _looks_like_gmail_thread_followup(extraction.raw_message):
+            extraction = extraction.model_copy(
+                update={
+                    "domain": "mail",
+                    "action": "thread",
+                    "intent": "gmail_thread",
+                    "mail": extraction.mail or MailExtractionPayload(),
+                }
+            )
+
     if previous_extraction is None:
         return extraction
 
@@ -859,6 +1259,71 @@ def apply_reference_context(
     if extraction.domain == "note":
         return _apply_note_reference_context(extraction, previous_extraction)
     return extraction
+
+
+def _promote_mail_followup_intent(
+    extraction: StructuredExtraction,
+    previous_extraction: StructuredExtraction,
+    last_mail_result_context: dict | None,
+) -> StructuredExtraction:
+    if extraction.intent in {"gmail_detail", "gmail_thread", "gmail_reply", "gmail_thread_reply"}:
+        return extraction
+    if _looks_like_gmail_thread_followup(extraction.raw_message):
+        return extraction.model_copy(
+            update={
+                "domain": "mail",
+                "action": "thread",
+                "intent": "gmail_thread",
+                "mail": extraction.mail or MailExtractionPayload(),
+                "confidence": max(extraction.confidence, 0.8),
+            }
+        )
+
+    context_mode = str((last_mail_result_context or {}).get("mode") or "")
+    previous_intent = previous_extraction.intent
+    if previous_intent in {"gmail_summary", "gmail_list", "gmail_detail", "gmail_thread"} or context_mode in {"list", "detail", "thread"}:
+        mail_payload = extraction.mail or MailExtractionPayload()
+        if extraction.intent in {"chat", "gmail_summary", "gmail_list"} or extraction.domain in {"chat", "unknown"}:
+            return extraction.model_copy(
+                update={
+                    "domain": "mail",
+                    "action": "detail",
+                    "intent": "gmail_detail",
+                    "mail": mail_payload,
+                    "confidence": max(extraction.confidence, 0.8),
+                }
+            )
+    return extraction
+
+
+def _extract_candidates_from_mail_result_context(mail_result_context: dict | None) -> list[dict[str, str]]:
+    if not isinstance(mail_result_context, dict):
+        return []
+    items = mail_result_context.get("items")
+    if not isinstance(items, list) or len(items) < 1:
+        return []
+
+    candidates: list[dict[str, str]] = []
+    for idx, item in enumerate(items[:20]):
+        if not isinstance(item, dict):
+            continue
+        subject = str(item.get("subject") or "").strip()
+        sender = str(item.get("sender") or "").strip()
+        raw = f"{sender} - {subject}".strip(" -")
+        candidates.append(
+            {
+                "index": idx,
+                "label": subject or raw or f"{idx + 1}번 메일",
+                "raw": raw or subject or f"{idx + 1}번 메일",
+                "sender": sender,
+                "toRecipients": str(item.get("toRecipients") or item.get("to_recipients") or item.get("to") or "").strip(),
+                "snippet": str(item.get("snippet") or "").strip(),
+                "date": str(item.get("date") or "").strip(),
+                "message_id": str(item.get("messageId") or item.get("message_id") or item.get("id") or "").strip(),
+                "thread_id": str(item.get("threadId") or item.get("thread_id") or "").strip(),
+            }
+        )
+    return candidates
 
 
 def _apply_candidate_selection(
@@ -902,10 +1367,19 @@ def _apply_candidate_selection(
                 extraction.mail.thread_reference = thread_id
             extraction.mail.selected_indexes = [index]
             extraction.mail.detail_level = extraction.mail.detail_level or "brief"
+        elif extraction.intent == "gmail_thread":
+            message_id = (candidate_data or {}).get("message_id") or (candidate_data or {}).get("messageId")
+            thread_id = (candidate_data or {}).get("thread_id") or (candidate_data or {}).get("threadId")
+            if message_id:
+                extraction.mail.message_reference = message_id
+            if thread_id:
+                extraction.mail.thread_reference = thread_id
+            extraction.mail.selected_indexes = [index]
+            extraction.mail.detail_level = extraction.mail.detail_level or "brief"
         elif not extraction.mail.search_query:
             extraction.mail.search_query = candidate_label
-    elif extraction.domain == "mail" and extraction.intent == "gmail_detail":
-        # 메일 payload가 비어 있어도 후보 기반 상세 조회가 가능하도록 초기화한다.
+    elif extraction.domain == "mail" and extraction.intent in {"gmail_detail", "gmail_thread"}:
+        # 메일 payload가 비어 있어도 후보 기반 조회가 가능하도록 초기화한다.
         extraction.mail = MailExtractionPayload()
         message_id = (candidate_data or {}).get("message_id") or (candidate_data or {}).get("messageId")
         thread_id = (candidate_data or {}).get("thread_id") or (candidate_data or {}).get("threadId")
@@ -924,6 +1398,60 @@ def _apply_candidate_selection(
     if extraction.needs_clarification:
         extraction.needs_clarification = False
         extraction.missing_fields = [f for f in extraction.missing_fields if f not in {"title", "subject", "target", "date_or_time"}]
+    return extraction
+
+
+def _apply_multi_candidate_selection(
+    extraction: StructuredExtraction,
+    indexes: list[int],
+    previous_extraction: StructuredExtraction | None,
+    candidates: list[dict[str, str]],
+) -> StructuredExtraction:
+    labels = [candidate.get("label") or candidate.get("raw") or f"{idx + 1}번 메일" for idx, candidate in zip(indexes, candidates)]
+    extraction.references = [
+        ExtractionReference(
+            referenceType="candidate_selection_multi",
+            referenceId=",".join(str(idx) for idx in indexes),
+            label=", ".join(labels[:3]),
+            score=0.9,
+        )
+    ] + list(extraction.references)
+    extraction.metadata = {
+        **dict(extraction.metadata),
+        "candidate_selected": True,
+        "candidate_selected_multi": True,
+        "candidate_indexes": indexes,
+        "candidate_labels": labels,
+        "candidate_data_list": candidates,
+    }
+
+    if extraction.domain != "mail":
+        extraction = _inherit_domain_from_previous(extraction, previous_extraction) if previous_extraction is not None else extraction
+
+    if extraction.intent not in {"gmail_detail", "gmail_thread"}:
+        extraction.intent = "gmail_detail"
+        extraction.action = "detail"
+        extraction.domain = "mail"
+
+    if extraction.mail is None:
+        extraction.mail = MailExtractionPayload()
+    extraction.mail.selected_indexes = indexes
+    extraction.mail.detail_level = extraction.mail.detail_level or "brief"
+
+    first_candidate = candidates[0] if candidates else None
+    if first_candidate:
+        message_id = first_candidate.get("message_id") or first_candidate.get("messageId")
+        thread_id = first_candidate.get("thread_id") or first_candidate.get("threadId")
+        if message_id and not extraction.mail.message_reference:
+            extraction.mail.message_reference = message_id
+        if thread_id and not extraction.mail.thread_reference:
+            extraction.mail.thread_reference = thread_id
+        if not extraction.mail.subject:
+            extraction.mail.subject = first_candidate.get("label") or first_candidate.get("raw")
+
+    if extraction.needs_clarification:
+        extraction.needs_clarification = False
+        extraction.missing_fields = [f for f in extraction.missing_fields if f not in {"subject", "target"}]
     return extraction
 
 
@@ -970,6 +1498,12 @@ _NUMBERED_ITEM_PATTERN = re.compile(
     re.MULTILINE,
 )
 
+# **N)** 헤더 뒤 다음 줄에 "제목: ..." 형식이 오는 새 포맷 매칭
+_NUMBERED_HEADER_WITH_SUBJECT_PATTERN = re.compile(
+    r"^\s*\**(?P<num>\d+)\)\**[^\n]*\n\s*제목:\s*(?P<subject>.+)$",
+    re.MULTILINE,
+)
+
 
 def extract_candidates_from_reply(reply: str, route: str) -> list[dict[str, str]]:
     """어시스턴트 응답 텍스트에서 번호가 매겨진 항목 목록을 후보로 추출한다.
@@ -980,6 +1514,21 @@ def extract_candidates_from_reply(reply: str, route: str) -> list[dict[str, str]
     if route not in {"n8n", "n8n_fallback", "local_llm", "web_search"}:
         return []
 
+    # 새 포맷 (**N)**\n제목: ...) 우선 시도
+    items = []
+    for m in _NUMBERED_HEADER_WITH_SUBJECT_PATTERN.finditer(reply):
+        subject = m.group("subject").strip()
+        if len(subject) < 2:
+            continue
+        items.append({
+            "index": len(items),
+            "label": subject[:120],
+            "raw": subject,
+        })
+    if len(items) >= 2:
+        return items[:20]
+
+    # 기존 포맷 (N) subject** 또는 N. sender - subject) 폴백
     items = []
     has_numbered = False
     for m in _NUMBERED_ITEM_PATTERN.finditer(reply):
@@ -1099,6 +1648,10 @@ def _apply_mail_reference_context(
         merged_mail.thread_reference or merged_mail.message_reference or merged_mail.search_query
     ):
         missing_fields = [field for field in missing_fields if field not in {"message", "target"}]
+    if extraction.intent == "gmail_thread" and (
+        merged_mail.thread_reference or merged_mail.message_reference or merged_mail.search_query
+    ):
+        missing_fields = [field for field in missing_fields if field not in {"thread", "target"}]
 
     return extraction.model_copy(
         update={
@@ -1271,6 +1824,27 @@ def _mail_payload_to_detail_request(payload: MailExtractionPayload | None) -> di
     return result if any(key in result for key in ("message_id", "thread_id", "search_query", "subject")) else None
 
 
+def _mail_payload_to_thread_request(payload: MailExtractionPayload | None) -> dict[str, str] | None:
+    if payload is None:
+        return None
+    result: dict[str, str] = {
+        "detail_level": payload.detail_level or "brief",
+    }
+    if payload.message_reference:
+        result["message_id"] = payload.message_reference
+    if payload.thread_reference:
+        result["thread_id"] = payload.thread_reference
+    if payload.search_query:
+        result["search_query"] = payload.search_query
+    if payload.subject:
+        result["subject"] = payload.subject
+    if payload.sender:
+        result["sender"] = payload.sender
+    if payload.limit:
+        result["limit"] = str(payload.limit)
+    return result if any(key in result for key in ("message_id", "thread_id", "search_query", "subject")) else None
+
+
 def build_gmail_detail_target_guidance(extraction: StructuredExtraction | None = None) -> str:
     default_reply = (
         "메일 상세 조회 대상을 찾지 못했습니다.\n"
@@ -1299,6 +1873,25 @@ def build_gmail_detail_target_guidance(extraction: StructuredExtraction | None =
     lines.append("예: '2번 메일 상세 보여줘'")
     lines.append("또는 'message id:xxxxx' 형식으로 직접 지정해 주세요.")
     return "\n".join(lines)
+
+
+def build_gmail_thread_target_guidance(extraction: StructuredExtraction | None = None) -> str:
+    default_reply = (
+        "메일 스레드 조회 대상을 찾지 못했습니다.\n"
+        "같은 대화에서 먼저 메일 목록 또는 상세를 보여준 뒤 '같은 스레드 보여줘'처럼 요청하거나 "
+        "'thread id:xxxxx' 형식으로 직접 지정해 주세요."
+    )
+    if extraction is None:
+        return default_reply
+
+    metadata = dict(extraction.metadata)
+    candidate_label = metadata.get("candidate_label")
+    if isinstance(candidate_label, str) and candidate_label.strip():
+        return (
+            f"선택한 메일 '{candidate_label}' 의 스레드를 찾지 못했습니다.\n"
+            "thread id 또는 제목을 더 구체적으로 알려주세요."
+        )
+    return default_reply
 
 
 def classify_message_intent(message: str) -> str:
@@ -1337,10 +1930,18 @@ def classify_message_intent(message: str) -> str:
         return "gmail_reply"
     if has_explicit_send_request:
         return "gmail_send"
+    if (has_gmail_keyword and any(keyword in lowered for keyword in GMAIL_THREAD_VIEW_KEYWORDS)) or _looks_like_gmail_thread_followup(message):
+        return "gmail_thread"
     if has_gmail_keyword and any(keyword in lowered for keyword in GMAIL_DETAIL_KEYWORDS):
         return "gmail_detail"
     if has_gmail_keyword and any(keyword in lowered for keyword in GMAIL_LIST_KEYWORDS):
         return "gmail_list"
+    if has_gmail_keyword and any(keyword in lowered for keyword in GMAIL_TRASH_KEYWORDS):
+        return "gmail_trash"
+    if has_gmail_keyword and any(keyword in lowered for keyword in GMAIL_ARCHIVE_KEYWORDS):
+        return "gmail_archive"
+    if has_gmail_keyword and any(keyword in lowered for keyword in GMAIL_MARK_READ_KEYWORDS):
+        return "gmail_mark_read"
     if has_gmail_keyword and (
         any(keyword in lowered for keyword in GMAIL_SEND_KEYWORDS) or "보내" in message
     ) and not any(keyword in lowered for keyword in GMAIL_SUMMARY_KEYWORDS):
@@ -1597,6 +2198,8 @@ def _build_skill_validation_error(skill_id: str, extraction: StructuredExtractio
         return "메일 회신 요청을 이해하지 못했습니다. 예: 제목 AI Assistant Gmail 발송 테스트 내용 확인했습니다 메일에 답장해줘"
     if skill_id == "gmail_detail":
         return build_gmail_detail_target_guidance(extraction)
+    if skill_id == "gmail_thread":
+        return build_gmail_thread_target_guidance(extraction)
     if skill_id in {"gmail_summary", "gmail_list"}:
         return "메일 조회 요청을 이해하지 못했습니다. 조건을 조금 더 구체적으로 알려주세요."
     return "요청을 이해하지 못했습니다. 대상을 조금 더 구체적으로 알려주세요."
@@ -1896,6 +2499,46 @@ def parse_gmail_detail_request(message: str) -> dict[str, str] | None:
     if not any(result.get(key) for key in ("message_id", "thread_id", "subject", "search_query")):
         return None
     return result
+
+
+def parse_gmail_thread_request(message: str) -> dict[str, str] | None:
+    subject = _extract_labeled_segment(
+        message,
+        labels=("제목", "subject"),
+        stop_labels=("메일", "스레드", "thread", "대화", "상세", "자세히", *GMAIL_COMPOSE_STOP_LABELS),
+    )
+    sender = _extract_labeled_segment(
+        message,
+        labels=("발신자", "보낸 사람", "sender"),
+        stop_labels=("제목", "subject", "스레드", "thread", *GMAIL_COMPOSE_STOP_LABELS),
+    )
+    thread_id = _extract_pattern_value(THREAD_ID_PATTERN, message)
+    message_id = _extract_pattern_value(MESSAGE_ID_PATTERN, message)
+    search_query = _build_gmail_search_query(message)
+
+    result = {"detail_level": "full" if any(keyword in message for keyword in ("본문", "원문", "전체")) else "brief"}
+    if message_id:
+        result["message_id"] = message_id
+    if thread_id:
+        result["thread_id"] = thread_id
+    if subject:
+        result["subject"] = subject
+    if sender:
+        result["sender"] = sender
+    if search_query:
+        result["search_query"] = search_query
+
+    if not any(result.get(key) for key in ("message_id", "thread_id", "subject", "search_query")) and not _looks_like_gmail_thread_followup(message):
+        return None
+    return result
+
+
+def _looks_like_gmail_thread_followup(message: str) -> bool:
+    lowered = message.lower()
+    has_thread_term = any(keyword in lowered for keyword in GMAIL_THREAD_VIEW_KEYWORDS)
+    has_view_term = any(keyword in message for keyword in ("보여", "조회", "흐름", "전체", "다시"))
+    has_reference_term = any(keyword in message for keyword in ("같은", "이 메일", "그 메일", "방금", "직전"))
+    return has_thread_term and (has_view_term or has_reference_term)
 
 
 def parse_macos_note_request(message: str) -> dict[str, str] | None:
